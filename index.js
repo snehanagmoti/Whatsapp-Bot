@@ -1,0 +1,165 @@
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const { captureScreenshot } = require('./screenshot');
+const db = require('./db');
+const scheduler = require('./scheduler');
+require('dotenv').config();
+
+// In-memory state machine to track conversations
+// Structure: { "chatId": { state: "AWAITING_URL", tempReport: { url: "..." } } }
+const chatStates = {};
+
+const client = new Client({
+    authStrategy: new LocalAuth()
+});
+
+client.on('qr', (qr) => {
+    console.log('Please scan the QR code below to link the bot:');
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', () => {
+    console.log('WhatsApp Bot is ready and connected!');
+    // Boot all active schedules from the database
+    scheduler.bootScheduler(client);
+});
+
+client.on('message_create', async (message) => {
+    const targetChatId = message.fromMe ? message.to : message.from;
+    const text = message.body.trim();
+
+    // 1. Check if the user is currently in the middle of adding a report
+    if (chatStates[targetChatId]) {
+        await handleAddReportConversation(targetChatId, text);
+        return; // Don't process other commands while in setup flow
+    }
+
+    // 2. Handle generic commands
+    
+    // Command: !addreport
+    if (text === '!addreport') {
+        chatStates[targetChatId] = { state: 'AWAITING_URL', tempReport: {} };
+        await client.sendMessage(targetChatId, 'Let\'s add a new report!\n\nPlease reply with the **URL** for the report dashboard.');
+        return;
+    }
+
+    // Command: !listreports
+    if (text === '!listreports') {
+        const reports = db.getReportsForChat(targetChatId);
+        if (reports.length === 0) {
+            await client.sendMessage(targetChatId, 'There are no reports configured for this chat. Use `!addreport` to add one.');
+        } else {
+            let msg = '*Configured Reports:*\n\n';
+            reports.forEach(r => {
+                msg += `- *${r.name}*\n  URL: ${r.url}\n  Schedule: ${r.schedule}\n\n`;
+            });
+            await client.sendMessage(targetChatId, msg);
+        }
+        return;
+    }
+
+    // Command: !removereport [name]
+    if (text.startsWith('!removereport ')) {
+        const reportName = text.replace('!removereport ', '').trim();
+        const success = db.removeReportFromChat(targetChatId, reportName);
+        if (success) {
+            scheduler.cancelScheduledReport(targetChatId, reportName);
+            await client.sendMessage(targetChatId, `Successfully deleted report: *${reportName}*`);
+        } else {
+            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*.`);
+        }
+        return;
+    }
+
+    // Command: !report [name] (On-Demand screenshot)
+    if (text.startsWith('!report ')) {
+        const reportName = text.replace('!report ', '').trim();
+        const reports = db.getReportsForChat(targetChatId);
+        const report = reports.find(r => r.name.toLowerCase() === reportName.toLowerCase());
+
+        if (!report) {
+            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*. Use \`!listreports\` to see available reports.`);
+            return;
+        }
+
+        try {
+            console.log(`Received on-demand request for ${report.name} in chat: ${targetChatId}`);
+            await client.sendMessage(targetChatId, `Loading report *${report.name}*... This may take a few seconds.`);
+            
+            // Pass the targetChatId to captureScreenshot so it uses the correct isolated browser profile
+            const imageBuffer = await captureScreenshot(report.url, targetChatId);
+            const media = new MessageMedia('image/png', imageBuffer.toString('base64'), `${report.name}.png`);
+            
+            await client.sendMessage(targetChatId, media, { caption: `Here is your requested report: *${report.name}*` });
+        } catch (error) {
+            console.error('Failed to send report:', error);
+            await client.sendMessage(targetChatId, `Sorry, I encountered an error while trying to fetch the report *${report.name}*.`);
+        }
+        return;
+    }
+});
+
+// Helper function to handle the conversational flow for adding a report
+async function handleAddReportConversation(chatId, text) {
+    // Prevent infinite loop when testing from the bot's own phone
+    const botPrompts = [
+        "Let's add a new report!\n\nPlease reply with the **URL** for the report dashboard.",
+        "That does not look like a valid URL. Please reply with a valid URL starting with http:// or https:// (or type `cancel` to quit).",
+        'Great! Now, please reply with a short **Name** for this report (e.g., "Daily Sales" or "Marketing Dashboard").',
+        "Got it. When should I send this report automatically?\n\nReply with a number:\n*1* = Daily at 9:00 AM\n*2* = Daily at 5:00 PM\n*3* = No schedule (On-Demand only)\n\n*(Type `cancel` to abort)*",
+        "Report setup cancelled."
+    ];
+    
+    if (botPrompts.includes(text)) {
+        return; // Ignore the bot's own automated messages
+    }
+
+    const currentState = chatStates[chatId].state;
+
+    // Provide a way out if they get stuck
+    if (text.toLowerCase() === 'cancel') {
+        delete chatStates[chatId];
+        await client.sendMessage(chatId, 'Report setup cancelled.');
+        return;
+    }
+
+    if (currentState === 'AWAITING_URL') {
+        if (!text.startsWith('http')) {
+            await client.sendMessage(chatId, 'That does not look like a valid URL. Please reply with a valid URL starting with http:// or https:// (or type `cancel` to quit).');
+            return;
+        }
+        chatStates[chatId].tempReport.url = text;
+        chatStates[chatId].state = 'AWAITING_NAME';
+        await client.sendMessage(chatId, 'Great! Now, please reply with a short **Name** for this report (e.g., "Daily Sales" or "Marketing Dashboard").');
+        
+    } else if (currentState === 'AWAITING_NAME') {
+        chatStates[chatId].tempReport.name = text;
+        chatStates[chatId].state = 'AWAITING_SCHEDULE';
+        
+        const scheduleMsg = `Got it. When should I send this report automatically?\n\nReply with a number:\n*1* = Daily at 9:00 AM\n*2* = Daily at 5:00 PM\n*3* = No schedule (On-Demand only)\n\n*(Type \`cancel\` to abort)*`;
+        await client.sendMessage(chatId, scheduleMsg);
+
+    } else if (currentState === 'AWAITING_SCHEDULE') {
+        if (!['1', '2', '3'].includes(text)) {
+            await client.sendMessage(chatId, 'Invalid choice. Please reply with 1, 2, or 3.');
+            return;
+        }
+
+        const tempReport = chatStates[chatId].tempReport;
+        
+        // Save to database
+        const savedReport = db.addReportToChat(chatId, tempReport.name, tempReport.url, text);
+        
+        // Add to dynamic scheduler
+        scheduler.scheduleReport(client, chatId, savedReport);
+
+        // Clear conversational state
+        delete chatStates[chatId];
+
+        await client.sendMessage(chatId, `🎉 Success! The report *${savedReport.name}* has been configured and scheduled.\n\nYou can use \`!report ${savedReport.name}\` to request it manually anytime.`);
+    }
+}
+
+// Start the client
+console.log('Starting WhatsApp client...');
+client.initialize();

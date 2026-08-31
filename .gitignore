@@ -1,0 +1,7 @@
+node_modules/
+.env
+.wwebjs_auth/
+user_data/
+user_data_profiles/
+database.json
+*.log
