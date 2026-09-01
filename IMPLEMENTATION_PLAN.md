@@ -38,6 +38,16 @@ Getting an automated bot to log into a website is notoriously difficult because 
 ### 5. Future Integration: Bot Service Account
 For massive company-wide dashboards where everyone shares the same view, a centralized flow is planned. Rather than individual users injecting cookies, the bot will act as a dedicated "Robot Employee" (e.g., `reporter@company.com`). The bot's server will hold the master password and automatically log in to take screenshots for everyone, requiring zero user intervention.
 
+## How It Works (Code Flow)
+
+If you are a developer looking to understand how the codebase is structured, here is a quick breakdown of the main files and how they interact:
+
+1. **`index.js` (The Brain):** This is the main entry point. It boots up the WhatsApp client, listens for incoming messages, and handles all the conversational logic (the `!addreport`, `!report`, and `!auth` commands).
+2. **`screenshot.js` (The Engine):** This file controls the headless Chrome browser using Puppeteer. It is responsible for injecting the saved cookies, navigating to the target URLs, taking the screenshot, and returning the image back to WhatsApp.
+3. **`server.js` (The Web Portal):** This runs a lightweight Express.js web server. It listens for users clicking their Magic Links and accepts the pasted cookies to pass them securely into the backend.
+4. **`scheduler.js` (The Alarm Clock):** This module uses `node-cron` to manage all the background jobs. When a report is scheduled for 9:00 AM, this file makes sure the screenshot engine is triggered at exactly that time.
+5. **`db.js` (The Memory):** A simple JSON-based database manager that reads and writes your configured reports to `database.json`, ensuring your settings survive a server restart.
+
 ## Official vs. Unofficial WhatsApp Integration
 
 The current architecture utilizes `whatsapp-web.js`, which acts as an unofficial client mimicking WhatsApp Web. 
