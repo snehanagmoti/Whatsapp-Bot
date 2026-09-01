@@ -11,23 +11,24 @@ This project is an automated WhatsApp bot designed to fetch and distribute authe
 
 ## Core Features Implemented
 
-### 1. Conversational State Machine
-Rather than relying on static `.env` configurations, the bot uses a conversational interface. Users can type `!addreport` to interactively set up a URL, a display name, and select a daily schedule (e.g., 9 AM, 5 PM, or On-Demand).
+### 1. Conversational UI & Dynamic Provisioning
+Forget manually editing `.env` files or hardcoding Cron expressions. The bot features an interactive state machine that allows users to seamlessly provision new dashboards directly through WhatsApp. By sending `!addreport`, users are guided through a simple chat wizard to define the target URL, report name, and delivery schedule.
 
-### 2. Multi-Profile Browser Architecture (Tenant Isolation)
-A major architectural challenge is handling multiple teams or users wanting private screenshots of the same underlying website (e.g., LeetCode).
-*   **Solution**: The bot uses dynamic `userDataDir` paths mapped to the WhatsApp `chatId`. 
-*   **Result**: When Group A asks for a report, Puppeteer launches using `./user_data_profiles/GroupA_ID/`. When User B asks for a report, it uses `./user_data_profiles/UserB_ID/`. Cookies, sessions, and cache are strictly isolated. User A cannot see User B's private dashboards.
+### 2. Strict Tenant Isolation (Multi-Profile Architecture)
+To securely support multiple users and teams querying private platforms (e.g., LeetCode, Looker, Metabase), the bot completely isolates browser sessions.
+*   **The Architecture:** Puppeteer dynamically routes physical browser data to isolated directories based on the WhatsApp `chatId` (e.g., `./user_data_profiles/TeamA_ID/`). 
+*   **The Benefit:** Zero cross-contamination. Team A's cookies, cache, and active sessions are strictly sandboxed from Team B. A user can never accidentally capture a screenshot of another user's private dashboard.
 
-### 3. Dynamic Scheduler
-Schedules are not hardcoded at boot. The `scheduler.js` module tracks active `node-cron` jobs in memory by `chatId_reportName`. When a user adds or deletes a report via chat, the scheduler instantly starts or stops the background job without requiring a server restart.
+### 3. Hot-Swappable Background Scheduler
+The scheduling engine (`scheduler.js`) utilizes in-memory `node-cron` tracking bound to specific `chatId_reportName` keys. This allows the bot to instantly spin up, modify, or tear down background jobs the moment a user types `!addreport` or `!removereport`, requiring zero downtime or server restarts.
 
-### 4. Credential Web Portal Authentication (Implemented via Cookie Injection)
-For private dashboards with complex logins (CAPTCHAs, 2FA, Cloudflare), the intended flow is fully user-controlled via a secure web portal hosted by the bot. When a user requests authentication via the `!auth [name]` command, the bot generates a unique Magic Link. The user opens this link and pastes their session cookies (exported from their desktop browser). The bot uses a headless Puppeteer instance on the backend to automatically inject these cookies and permanently save the authenticated session for that specific chat profile, completely bypassing login screens.
+### 4. Bypassing WAFs via Cookie Injection (Web Portal)
+Authenticating headless browsers against modern Web Application Firewalls (Cloudflare) and 2FA is notoriously brittle. To solve this, the bot hosts a lightweight, secure Express.js Web Portal.
+*   **The Flow:** When a user types `!auth`, they receive a Magic Link. They export their live session cookies from their own desktop browser and securely inject them into the portal.
+*   **The Result:** The bot's headless Puppeteer engine directly absorbs the user's validated session, completely bypassing all CAPTCHAs, multi-step logins, and Cloudflare challenges.
 
-### 5. Alternative Plan: Bot Service Account (Future Integration)
-For company-wide shared dashboards, an alternative authentication architecture is planned. Instead of user-controlled logins, the bot will act as a dedicated read-only service account (e.g., `screenshot-bot@company.com`). 
-* **How it will work:** Global credentials will be securely stored in the `.env` file. Puppeteer will automatically detect login screens and inject these global credentials seamlessly without any user intervention or web portals.
+### 5. Future Integration: Bot Service Account
+For enterprise environments sharing a single global dashboard, a centralized authentication flow is planned. Rather than user-controlled cookie injection, the bot will act as a dedicated read-only service account (e.g., `reporter@company.com`). Global credentials will be securely injected from the `.env` file upon detecting a login screen, requiring zero user intervention.
 
 ## Official vs. Unofficial WhatsApp Integration
 
