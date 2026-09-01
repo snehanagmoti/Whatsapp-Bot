@@ -12,23 +12,31 @@ This project is an automated WhatsApp bot designed to fetch and distribute authe
 ## Core Features Implemented
 
 ### 1. Conversational UI & Dynamic Provisioning
-Forget manually editing `.env` files or hardcoding Cron expressions. The bot features an interactive state machine that allows users to seamlessly provision new dashboards directly through WhatsApp. By sending `!addreport`, users are guided through a simple chat wizard to define the target URL, report name, and delivery schedule.
+*(In simple terms: You set up everything by chatting with the bot, no coding required!)*
+
+Forget manually editing configuration files or writing complex server code. The bot features an interactive chat menu. By simply sending the message `!addreport` to the bot on WhatsApp, you are guided through a step-by-step wizard. You just reply to the bot to tell it what URL to capture, what to name the report, and when you want it delivered. The bot saves all of this dynamically.
 
 ### 2. Strict Tenant Isolation (Multi-Profile Architecture)
-To securely support multiple users and teams querying private platforms (e.g., LeetCode, Looker, Metabase), the bot completely isolates browser sessions.
-*   **The Architecture:** Puppeteer dynamically routes physical browser data to isolated directories based on the WhatsApp `chatId` (e.g., `./user_data_profiles/TeamA_ID/`). 
-*   **The Benefit:** Zero cross-contamination. Team A's cookies, cache, and active sessions are strictly sandboxed from Team B. A user can never accidentally capture a screenshot of another user's private dashboard.
+*(In simple terms: Every user and group chat gets its own private, isolated web browser.)*
+
+To securely support multiple different teams or friends using the bot for private dashboards, the bot completely isolates browser sessions. 
+*   **The Architecture:** The bot uses the unique WhatsApp Phone Number or Group ID (the `chatId`) to create separate physical folders on the server (e.g., `./user_data_profiles/TeamA_ID/`). 
+*   **The Benefit:** Zero cross-contamination. Team A's logged-in sessions and cookies are strictly locked away from Team B. A user can never accidentally capture a screenshot of another user's private dashboard, ensuring absolute privacy.
 
 ### 3. Hot-Swappable Background Scheduler
-The scheduling engine (`scheduler.js`) utilizes in-memory `node-cron` tracking bound to specific `chatId_reportName` keys. This allows the bot to instantly spin up, modify, or tear down background jobs the moment a user types `!addreport` or `!removereport`, requiring zero downtime or server restarts.
+*(In simple terms: The bot updates its alarm clock instantly without needing to be restarted.)*
 
-### 4. Bypassing WAFs via Cookie Injection (Web Portal)
-Authenticating headless browsers against modern Web Application Firewalls (Cloudflare) and 2FA is notoriously brittle. To solve this, the bot hosts a lightweight, secure Express.js Web Portal.
-*   **The Flow:** When a user types `!auth`, they receive a Magic Link. They export their live session cookies from their own desktop browser and securely inject them into the portal.
-*   **The Result:** The bot's headless Puppeteer engine directly absorbs the user's validated session, completely bypassing all CAPTCHAs, multi-step logins, and Cloudflare challenges.
+The background scheduling engine utilizes in-memory tracking. This means that the moment a user types `!addreport` to schedule a 9:00 AM daily alert, or `!removereport` to cancel one, the bot instantly spins up or tears down that specific background job. It requires zero downtime or server restarts to apply schedule changes.
+
+### 4. Bypassing Security Walls via Cookie Injection
+*(In simple terms: We skip login screens completely to avoid CAPTCHAs and 2FA.)*
+
+Getting an automated bot to log into a website is notoriously difficult because of modern Security Walls (like Cloudflare) and Two-Factor Authentication (2FA). To solve this, the bot hosts a lightweight, secure Web Portal.
+*   **The Flow:** When a user types `!auth`, they receive a secure Magic Link. The user logs into the dashboard on their own personal computer, copies their "Session Cookies" (the digital proof that they are logged in), and pastes them into the bot's Web Portal.
+*   **The Result:** The bot's headless browser directly absorbs this proof of login. It completely bypasses all CAPTCHAs, multi-step logins, and security challenges because the website believes the bot is already authenticated!
 
 ### 5. Future Integration: Bot Service Account
-For enterprise environments sharing a single global dashboard, a centralized authentication flow is planned. Rather than user-controlled cookie injection, the bot will act as a dedicated read-only service account (e.g., `reporter@company.com`). Global credentials will be securely injected from the `.env` file upon detecting a login screen, requiring zero user intervention.
+For massive company-wide dashboards where everyone shares the same view, a centralized flow is planned. Rather than individual users injecting cookies, the bot will act as a dedicated "Robot Employee" (e.g., `reporter@company.com`). The bot's server will hold the master password and automatically log in to take screenshots for everyone, requiring zero user intervention.
 
 ## Official vs. Unofficial WhatsApp Integration
 
