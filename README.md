@@ -6,7 +6,7 @@ An automated, multi-tenant WhatsApp bot built with Node.js, `whatsapp-web.js`, a
 * **Conversational Interface**: Setup your reports interactively by chatting with the bot (`!addreport`). No need to edit `.env` files or write Cron expressions.
 * **Multi-Profile Isolation**: Built with tenant security in mind. Every WhatsApp chat (group or personal DM) gets its own isolated Chrome browser profile. Team A cannot see Team B's private dashboards, and cookies are never mixed.
 * **Dynamic Background Scheduler**: Built-in background scheduling allows users to set daily delivery times (e.g. 9:00 AM) that are triggered automatically.
-* **Admin Login Utility**: Provides a headless bypass script (`login.js`) so server admins can easily pass 2FA/CAPTCHAs and log specific chats into private company portals securely.
+* **Cookie Injection Portal**: The bot hosts a lightweight Express server, providing a secure web portal. Users can click a magic link in WhatsApp (`!auth`) to inject their exact session cookies directly into the bot's headless browser, completely bypassing all CAPTCHAs, 2FA, and complex login forms.
 
 ## Documentation
 For full details on how this project works and how to use it, please see the included markdown guides:

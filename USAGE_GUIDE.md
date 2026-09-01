@@ -21,22 +21,18 @@ Open a WhatsApp chat with the bot (or add the bot to a Group Chat). Type the fol
 *   `!removereport [name]` - Deletes a report and cancels its schedule.
 *   `!report [name]` - Forces the bot to take a screenshot and send it immediately.
 
-## 3. Authenticating Private Dashboards (Admin Only)
-If a user adds a URL that requires a login (like Looker, LeetCode, or a company portal), the bot will just send a screenshot of the login screen. You (the Admin) must log the bot in manually.
-
-Because the bot uses isolated profiles per-chat, you must log in specifically for the chat that requested the report.
+## 3. Authenticating Private Dashboards (Cookie Injection)
+For private dashboards that have complex logins (like Google, 2FA, or CAPTCHAs), we use a highly reliable Cookie Injection method. This allows you to solve the login challenges yourself, and seamlessly pass the authenticated session to the bot.
 
 **Step-by-step:**
-1.  Ask the user to type `!chatid` in their WhatsApp chat. They will get an ID (e.g., `12345678@c.us`).
-2.  Leave `node index.js` running. Open a *new* terminal window.
-3.  Run the standalone admin login script:
-    ```bash
-    node login.js 12345678@c.us https://company.com/login
-    ```
-4.  A physical Chrome window will pop up.
-5.  Type in the username, password, and pass any 2FA/CAPTCHAs.
-6.  Once you see the dashboard load successfully, simply close the Chrome window!
-7.  The session is now permanently saved. The user can type `!report [name]` again and the bot will bypass the login screen.
+1.  On your computer's browser, install a cookie export extension (e.g., **EditThisCookie** for Chrome).
+2.  Log into your dashboard normally (e.g., log into Google, solve the CAPTCHAs, do the 2FA).
+3.  Click the "EditThisCookie" extension icon and click the "Export" button. This copies your session cookies to your clipboard.
+4.  Type `!auth [reportName]` in your WhatsApp chat (e.g., `!auth Sales`).
+5.  The bot will reply with a secure Magic Link. Click it to open the Credential Web Portal.
+6.  Paste the cookies you copied into the text box and click "Inject Session Securely".
+7.  The bot will invisibly load your cookies in the background and permanently save your session.
+8.  You will receive a WhatsApp message confirming success! You can now type `!report [name]` and the bot will capture your dashboard using your exact session.
 
 ## Troubleshooting
 *   **Infinite Loop / Bot talking to itself:** If you type `!addreport` from the exact same phone that is hosting the bot, and the bot gets stuck looping, type `cancel` to abort the state. (Note: A patch has been applied to prevent this, but `cancel` is always the manual override).

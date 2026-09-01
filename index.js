@@ -3,6 +3,7 @@ const qrcode = require('qrcode-terminal');
 const { captureScreenshot } = require('./screenshot');
 const db = require('./db');
 const scheduler = require('./scheduler');
+const { startServer } = require('./server');
 require('dotenv').config();
 
 // In-memory state machine to track conversations
@@ -22,6 +23,9 @@ client.on('ready', () => {
     console.log('WhatsApp Bot is ready and connected!');
     // Boot all active schedules from the database
     scheduler.bootScheduler(client);
+    
+    // Start the Credential Web Portal
+    startServer(client);
 });
 
 client.on('message_create', async (message) => {
@@ -68,6 +72,25 @@ client.on('message_create', async (message) => {
         } else {
             await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*.`);
         }
+        return;
+    }
+
+    // Command: !auth [name] (Send magic link for authentication)
+    if (text.startsWith('!auth ')) {
+        const reportName = text.replace('!auth ', '').trim();
+        const reports = db.getReportsForChat(targetChatId);
+        const report = reports.find(r => r.name.toLowerCase() === reportName.toLowerCase());
+
+        if (!report) {
+            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*. Use \`!listreports\` to see available reports.`);
+            return;
+        }
+
+        // Generate the magic link
+        const serverIp = 'http://localhost:3000'; // Replace with actual server IP/domain in production
+        const magicLink = `${serverIp}/login?chatId=${encodeURIComponent(targetChatId)}&url=${encodeURIComponent(report.url)}`;
+        
+        await client.sendMessage(targetChatId, `🔐 *Authentication Required*\n\nPlease log in to authenticate the *${report.name}* dashboard.\n\nClick the secure link below to enter your credentials:\n${magicLink}`);
         return;
     }
 

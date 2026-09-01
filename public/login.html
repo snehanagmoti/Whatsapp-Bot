@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WhatsApp Bot Login Portal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f0f2f5; margin: 0; }
+        .login-box { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        h2 { margin-top: 0; color: #333; }
+        p { color: #666; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+        textarea { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: monospace; height: 150px; resize: vertical; }
+        button { width: 100%; padding: 12px; background-color: #25D366; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }
+        button:hover { background-color: #1ebe5d; }
+        .instructions { text-align: left; background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #25D366; }
+        .instructions ol { padding-left: 20px; margin: 0; color: #555; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>Dashboard Authentication</h2>
+        <div class="instructions">
+            <p><strong>How to authenticate:</strong></p>
+            <ol>
+                <li>Log in to your dashboard normally on your computer.</li>
+                <li>Use a browser extension like "EditThisCookie" to export your cookies.</li>
+                <li>Paste the copied JSON code below.</li>
+            </ol>
+        </div>
+        <form action="/auth" method="POST">
+            <input type="hidden" id="chatId" name="chatId" value="">
+            <input type="hidden" id="url" name="url" value="">
+            <textarea name="cookies" placeholder='[{"domain": ".google.com", "name": "SID", ...}]' required></textarea>
+            <button type="submit">Inject Session Securely</button>
+        </form>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        document.getElementById('chatId').value = urlParams.get('chatId');
+        document.getElementById('url').value = urlParams.get('url');
+    </script>
+</body>
+</html>
