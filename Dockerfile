@@ -1,5 +1,9 @@
 FROM ghcr.io/puppeteer/puppeteer:25.9.0
 
+# Keep the Node/native allocators within Render Free's 512 MB memory budget.
+ENV NODE_OPTIONS=--max-old-space-size=128
+ENV MALLOC_ARENA_MAX=2
+
 # Set up working directory
 WORKDIR /usr/src/app
 

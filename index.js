@@ -62,8 +62,9 @@ const whatsappBrowserArgs = [
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     '--no-zygote',
-    '--single-process',
+    '--renderer-process-limit=1',
     '--disable-gpu',
+    '--disable-software-rasterizer',
     '--disable-extensions',
     '--disable-default-apps',
     '--no-first-run',
@@ -93,6 +94,14 @@ client.on('qr', (qr) => {
 
 client.on('authenticated', () => {
     console.log('WhatsApp authentication completed; waiting for the client to become ready...');
+});
+
+client.on('loading_screen', (percent, message) => {
+    console.log(`WhatsApp loading: ${percent}% ${message || ''}`.trim());
+});
+
+client.on('change_state', (state) => {
+    console.log(`WhatsApp connection state: ${state}`);
 });
 
 client.on('ready', () => {
