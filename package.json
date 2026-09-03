@@ -7,7 +7,6 @@
     "test": "node --test",
     "check": "node --check index.js && node --check server.js && node --check screenshot.js && node --check scheduler.js && node --check db.js"
   },
-
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -15,6 +14,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "mongodb": "^6.21.0",
     "node-cron": "^4.6.0",
     "puppeteer": "^25.9.0",
     "qrcode-terminal": "^0.12.0",

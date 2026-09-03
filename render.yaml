@@ -2,11 +2,15 @@ services:
   - type: web
     name: whatsapp-screenshot-bot
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /healthz
     envVars:
       - key: DATA_DIR
-        value: /var/data
+        value: /tmp/whatsapp-bot
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: whatsapp_bot
       - key: PUBLIC_BASE_URL
         sync: false
       - key: LOOKER_ACTION_TOKEN
@@ -15,7 +19,3 @@ services:
         sync: false
       - key: ENABLE_COOKIE_AUTH_PORTAL
         value: "false"
-    disk:
-      name: whatsapp-bot-data
-      mountPath: /var/data
-      sizeGB: 1

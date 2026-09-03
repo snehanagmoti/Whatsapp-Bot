@@ -63,8 +63,8 @@ The production-critical local work is now implemented on `codex/looker-hardening
 - Added Action Hub token verification using Looker's `Authorization: Token token="..."` format.
 - Added a WhatsApp destination allowlist, strict chat-ID/PNG validation, payload limits, and clear failure responses.
 - Started the HTTP server before WhatsApp authentication so Render health checks succeed; added `/healthz` and `/readyz`.
-- Added `DATA_DIR` support and a paid Render persistent disk Blueprint so WhatsApp auth, report configuration, and browser profiles survive restarts.
+- Added a custom MongoDB GridFS `RemoteAuth` store and a Render Free Blueprint. The WhatsApp linked-device session survives ephemeral restarts using a MongoDB Atlas Free cluster.
 - Added `.dockerignore`, pinned the Puppeteer image, changed Docker installation to `npm ci`, and disabled the unsafe cookie-import portal by default.
 - Added automated tests for manifest authentication, readiness, successful delivery, and destination authorization.
 
-Remaining work requires external accounts: push the branch, create the Render Blueprint/service, configure its environment values, scan the WhatsApp QR code, add the authenticated `/actions` endpoint in Looker, and run a real scheduled dashboard delivery.
+Remaining external setup: create a free Atlas cluster, deploy the Render Blueprint, configure its environment values, scan the WhatsApp QR code, add the authenticated `/actions` endpoint in Looker, and run a real scheduled dashboard delivery. Render Free cold starts remain a prototype limitation.

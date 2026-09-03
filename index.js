@@ -1,22 +1,41 @@
 require('dotenv').config();
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia, RemoteAuth } = require('whatsapp-web.js');
 const path = require('path');
 const qrcode = require('qrcode-terminal');
 const { captureScreenshot } = require('./screenshot');
 const db = require('./db');
 const scheduler = require('./scheduler');
 const { startServer } = require('./server');
+const { MongoGridFsStore } = require('./mongoAuthStore');
 
 // In-memory state machine to track conversations
 // Structure: { "chatId": { state: "AWAITING_URL", tempReport: { url: "..." } } }
 const chatStates = {};
 
 const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
+const authDataPath = path.join(dataDir, '.wwebjs_auth');
 let whatsappReady = false;
 let schedulerBooted = false;
 
+const remoteStore = process.env.MONGODB_URI
+    ? new MongoGridFsStore({
+        uri: process.env.MONGODB_URI,
+        dataPath: authDataPath,
+        dbName: process.env.MONGODB_DB_NAME || 'whatsapp_bot'
+    })
+    : null;
+
+const authStrategy = remoteStore
+    ? new RemoteAuth({
+        clientId: process.env.WWEBJS_CLIENT_ID || 'bot',
+        dataPath: authDataPath,
+        store: remoteStore,
+        backupSyncIntervalMs: Math.max(Number(process.env.WWEBJS_BACKUP_INTERVAL_MS) || 60000, 60000)
+    })
+    : new LocalAuth({ dataPath: authDataPath });
+
 const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: path.join(dataDir, '.wwebjs_auth') }),
+    authStrategy,
     puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
@@ -39,6 +58,10 @@ client.on('ready', () => {
         scheduler.bootScheduler(client);
         schedulerBooted = true;
     }
+});
+
+client.on('remote_session_saved', () => {
+    console.log('WhatsApp session backup saved to MongoDB.');
 });
 
 client.on('auth_failure', (message) => {
@@ -218,4 +241,18 @@ async function handleAddReportConversation(chatId, text) {
 
 // Start the client
 console.log('Starting WhatsApp client...');
-client.initialize();
+client.initialize().catch(error => {
+    console.error('WhatsApp client failed to initialize:', error);
+    process.exitCode = 1;
+});
+
+async function shutdown(signal) {
+    console.log(`Received ${signal}; shutting down.`);
+    whatsappReady = false;
+    await client.destroy().catch(() => {});
+    if (remoteStore) await remoteStore.close().catch(() => {});
+    process.exit(0);
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
