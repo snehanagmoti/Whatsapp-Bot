@@ -54,9 +54,8 @@ function resolveBrowserExecutable() {
 
 const browserExecutable = resolveBrowserExecutable();
 
-// Render Free provides 512 MB RAM. Keeping Chromium to a single process is
-// important because the normal multi-process layout can exceed that limit
-// while WhatsApp Web finishes linking a device.
+// Render Free provides 512 MB RAM. Limit Chromium's renderer count while still
+// preserving its supported multi-process architecture during device linking.
 const whatsappBrowserArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -73,8 +72,12 @@ const whatsappBrowserArgs = [
 
 const client = new Client({
     authStrategy,
+    // A free Render instance can take well over a minute to cold-start
+    // WhatsApp Web. The library's shorter default can invalidate a valid QR.
+    authTimeoutMs: Number(process.env.WWEBJS_AUTH_TIMEOUT_MS) || 180000,
     puppeteer: {
         headless: true,
+        protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS) || 180000,
         ...(browserExecutable ? { executablePath: browserExecutable } : {}),
         args: whatsappBrowserArgs
     }
@@ -300,7 +303,9 @@ async function handleAddReportConversation(chatId, text) {
 console.log('Starting WhatsApp client...');
 client.initialize().catch(error => {
     console.error('WhatsApp client failed to initialize:', error);
-    process.exitCode = 1;
+    // Do not leave an HTTP-only process reporting "not_ready" forever.
+    // Render will restart it and generate a fresh QR for the next attempt.
+    setTimeout(() => process.exit(1), 1000);
 });
 
 async function shutdown(signal) {
