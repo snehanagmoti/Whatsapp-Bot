@@ -56,14 +56,14 @@ function resolveBrowserExecutable() {
 
 const browserExecutable = resolveBrowserExecutable();
 
-// Render Free provides 512 MB RAM. Limit Chromium's renderer count while still
-// preserving its supported multi-process architecture during device linking.
+// Render Free provides only 512 MB RAM and 0.1 CPU. A single Chromium process
+// avoids memory exhaustion and reduces CPU starvation during device linking.
 const whatsappBrowserArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     '--no-zygote',
-    '--renderer-process-limit=1',
+    '--single-process',
     '--disable-gpu',
     '--disable-software-rasterizer',
     '--disable-extensions',
