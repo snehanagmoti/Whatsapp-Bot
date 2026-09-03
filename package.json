@@ -5,19 +5,20 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
-    "check": "node --check index.js && node --check server.js && node --check screenshot.js && node --check scheduler.js && node --check db.js"
+    "check": "node --check index.js && node --check server.js && node --check screenshot.js && node --check scheduler.js && node --check db.js && node --check whatsappClient.js && node --check baileysAuthStore.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mongodb": "^6.21.0",
     "node-cron": "^4.6.0",
     "puppeteer": "^25.9.0",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "https://github.com/Adi1231234/whatsapp-web.js/archive/85443fa4c8f86111457590dd06564c3efe0f6d1d.tar.gz"
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
   }
 }

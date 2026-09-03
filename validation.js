@@ -1,5 +1,5 @@
 function isValidWhatsAppChatId(value) {
-    return typeof value === 'string' && /^\d+@(c|g)\.us$/.test(value.trim());
+    return typeof value === 'string' && /^\d+@(?:c\.us|g\.us|s\.whatsapp\.net)$/.test(value.trim());
 }
 
 function parseCsvSet(value = '') {

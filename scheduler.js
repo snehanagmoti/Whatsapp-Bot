@@ -1,7 +1,5 @@
 const cron = require('node-cron');
 const { readDb } = require('./db');
-const { captureScreenshot } = require('./screenshot');
-const { MessageMedia } = require('whatsapp-web.js');
 
 // Track all active jobs so we can stop/restart them dynamically
 const activeJobs = {};
@@ -36,9 +34,10 @@ function scheduleReport(client, chatId, report) {
     activeJobs[jobId] = cron.schedule(report.schedule, async () => {
         console.log(`[CRON Triggered] Running scheduled report: ${report.name} for chat ${chatId}`);
         try {
+            const { captureScreenshot } = require('./screenshot');
             // Pass the chatId to captureScreenshot so it uses the correct isolated browser profile
             const imageBuffer = await captureScreenshot(report.url, chatId);
-            const media = new MessageMedia('image/png', imageBuffer.toString('base64'), `${report.name}.png`);
+            const media = { mimetype: 'image/png', data: imageBuffer.toString('base64'), filename: `${report.name}.png` };
             
             await client.sendMessage(chatId, media, { caption: `Here is your scheduled automated report: ${report.name}` });
             console.log(`Scheduled report ${report.name} sent to ${chatId}.`);

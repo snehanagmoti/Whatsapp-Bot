@@ -1,10 +1,8 @@
 const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
-const { MessageMedia } = require('whatsapp-web.js');
 const QRCode = require('qrcode-terminal/vendor/QRCode');
 const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel');
-const { authenticateSession } = require('./screenshot');
 const { isValidWhatsAppChatId, parseCsvSet } = require('./validation');
 
 const DEFAULT_MAX_IMAGE_BYTES = 7 * 1024 * 1024;
@@ -131,6 +129,7 @@ function createApp({
         if (!isValidWhatsAppChatId(chatId) || !url || !cookies) return res.status(400).send('Invalid or missing fields.');
         res.send('<h2>Session import is in progress.</h2><p>You may close this window.</p>');
         try {
+            const { authenticateSession } = require('./screenshot');
             await authenticateSession(url, chatId, cookies);
             await client.sendMessage(chatId, `Successfully authenticated for: ${url}`);
         } catch (error) {
@@ -177,7 +176,7 @@ function createApp({
             const title = payload.scheduled_plan && typeof payload.scheduled_plan.title === 'string'
                 ? payload.scheduled_plan.title.trim().slice(0, 200) : '';
             const caption = customMessage || (title ? `Looker dashboard: ${title}` : 'Looker dashboard');
-            const media = new MessageMedia('image/png', image.toString('base64'), 'looker_dashboard.png');
+            const media = { mimetype: 'image/png', data: image.toString('base64'), filename: 'looker_dashboard.png' };
             await client.sendMessage(chatId, media, { caption });
             return res.json({ looker: { success: true } });
         } catch (error) {

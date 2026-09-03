@@ -1,88 +1,22 @@
 require('dotenv').config();
-const { Client, LocalAuth, MessageMedia, RemoteAuth } = require('whatsapp-web.js');
-const path = require('path');
-const fs = require('fs');
 const qrcode = require('qrcode-terminal');
-const puppeteer = require('puppeteer');
-const { captureScreenshot } = require('./screenshot');
 const db = require('./db');
 const scheduler = require('./scheduler');
 const { startServer } = require('./server');
-const { MongoGridFsStore } = require('./mongoAuthStore');
+const { WhatsAppClient } = require('./whatsappClient');
 
 // In-memory state machine to track conversations
 // Structure: { "chatId": { state: "AWAITING_URL", tempReport: { url: "..." } } }
 const chatStates = {};
 
-const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
-const authDataPath = path.join(dataDir, '.wwebjs_auth');
 let whatsappReady = false;
 let schedulerBooted = false;
 let latestQr = null;
 let latestQrAt = 0;
-let qrRefreshTimer = null;
-
-const remoteStore = process.env.MONGODB_URI
-    ? new MongoGridFsStore({
-        uri: process.env.MONGODB_URI,
-        dataPath: authDataPath,
-        dbName: process.env.MONGODB_DB_NAME || 'whatsapp_bot'
-    })
-    : null;
-
-const authStrategy = remoteStore
-    ? new RemoteAuth({
-        clientId: process.env.WWEBJS_CLIENT_ID || 'bot',
-        dataPath: authDataPath,
-        store: remoteStore,
-        backupSyncIntervalMs: Math.max(Number(process.env.WWEBJS_BACKUP_INTERVAL_MS) || 60000, 60000)
-    })
-    : new LocalAuth({ dataPath: authDataPath });
-
-// whatsapp-web.js bundles its own Puppeteer version, which can expect a
-// different Chrome revision than the official Puppeteer Docker image. Prefer
-// the browser installed for this application's pinned Puppeteer dependency.
-function resolveBrowserExecutable() {
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-    try {
-        const executablePath = puppeteer.executablePath();
-        return typeof executablePath === 'string' && fs.existsSync(executablePath)
-            ? executablePath
-            : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-const browserExecutable = resolveBrowserExecutable();
-
-// Render Free provides only 512 MB RAM and 0.1 CPU. A single Chromium process
-// avoids memory exhaustion and reduces CPU starvation during device linking.
-const whatsappBrowserArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--no-zygote',
-    '--single-process',
-    '--disable-gpu',
-    '--disable-software-rasterizer',
-    '--disable-extensions',
-    '--disable-default-apps',
-    '--no-first-run',
-    '--mute-audio'
-];
-
-const client = new Client({
-    authStrategy,
-    // A free Render instance can take well over a minute to cold-start
-    // WhatsApp Web. The library's shorter default can invalidate a valid QR.
-    authTimeoutMs: Number(process.env.WWEBJS_AUTH_TIMEOUT_MS) || 180000,
-    puppeteer: {
-        headless: true,
-        protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS) || 180000,
-        ...(browserExecutable ? { executablePath: browserExecutable } : {}),
-        args: whatsappBrowserArgs
-    }
+const client = new WhatsAppClient({
+    mongoUri: process.env.MONGODB_URI,
+    dbName: process.env.MONGODB_DB_NAME || 'whatsapp_bot',
+    sessionId: process.env.WWEBJS_CLIENT_ID || 'bot'
 });
 
 // Bind the HTTP port immediately so cloud health checks work before WhatsApp login completes.
@@ -92,43 +26,14 @@ startServer(client, {
     getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null
 });
 
-function clearQrRefreshTimer() {
-    if (qrRefreshTimer) clearTimeout(qrRefreshTimer);
-    qrRefreshTimer = null;
-}
-
-function scheduleQrRefresh() {
-    clearQrRefreshTimer();
-    qrRefreshTimer = setTimeout(async () => {
-        if (whatsappReady || !client.pupPage) return;
-        try {
-            const requested = await client.pupPage.evaluate(() => {
-                const socket = window.require?.('WAWebSocketModel')?.Socket;
-                if (!socket || !['UNPAIRED', 'UNPAIRED_IDLE'].includes(socket.state)) return false;
-                const command = window.require?.('WAWebCmd')?.Cmd;
-                if (typeof command?.refreshQR !== 'function') return false;
-                command.refreshQR();
-                return true;
-            });
-            if (requested) console.log('Requested a fresh WhatsApp QR code.');
-        } catch (error) {
-            console.warn('Could not refresh WhatsApp QR:', error.message || error);
-        }
-        // Retry if WhatsApp did not emit a replacement QR.
-        if (!whatsappReady) scheduleQrRefresh();
-    }, 45000);
-}
-
 client.on('qr', (qr) => {
     latestQr = qr;
     latestQrAt = Date.now();
-    scheduleQrRefresh();
     console.log('Please scan the QR code below to link the bot:');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
-    clearQrRefreshTimer();
     latestQr = null;
     latestQrAt = 0;
     console.log('WhatsApp authentication completed; waiting for the client to become ready...');
@@ -144,7 +49,6 @@ client.on('change_state', (state) => {
 
 client.on('ready', () => {
     whatsappReady = true;
-    clearQrRefreshTimer();
     latestQr = null;
     latestQrAt = 0;
     console.log('WhatsApp Bot is ready and connected!');
@@ -161,7 +65,6 @@ client.on('remote_session_saved', () => {
 
 client.on('auth_failure', (message) => {
     whatsappReady = false;
-    clearQrRefreshTimer();
     latestQr = null;
     latestQrAt = 0;
     console.error('WhatsApp authentication failed:', message);
@@ -169,7 +72,6 @@ client.on('auth_failure', (message) => {
 
 client.on('disconnected', (reason) => {
     whatsappReady = false;
-    clearQrRefreshTimer();
     latestQr = null;
     latestQrAt = 0;
     console.warn('WhatsApp disconnected:', reason);
@@ -265,10 +167,10 @@ client.on('message_create', async (message) => {
         try {
             console.log(`Received on-demand request for ${report.name} in chat: ${targetChatId}`);
             await client.sendMessage(targetChatId, `Loading report *${report.name}*... This may take a few seconds.`);
-            
+            const { captureScreenshot } = require('./screenshot');
             // Pass the targetChatId to captureScreenshot so it uses the correct isolated browser profile
             const imageBuffer = await captureScreenshot(report.url, targetChatId);
-            const media = new MessageMedia('image/png', imageBuffer.toString('base64'), `${report.name}.png`);
+            const media = { mimetype: 'image/png', data: imageBuffer.toString('base64'), filename: `${report.name}.png` };
             
             await client.sendMessage(targetChatId, media, { caption: `Here is your requested report: *${report.name}*` });
         } catch (error) {
@@ -353,7 +255,6 @@ async function shutdown(signal) {
     console.log(`Received ${signal}; shutting down.`);
     whatsappReady = false;
     await client.destroy().catch(() => {});
-    if (remoteStore) await remoteStore.close().catch(() => {});
     process.exit(0);
 }
 
