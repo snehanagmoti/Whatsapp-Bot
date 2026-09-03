@@ -19,6 +19,8 @@ const authDataPath = path.join(dataDir, '.wwebjs_auth');
 let whatsappReady = false;
 let schedulerBooted = false;
 let latestQr = null;
+let latestQrAt = 0;
+let qrRefreshTimer = null;
 
 const remoteStore = process.env.MONGODB_URI
     ? new MongoGridFsStore({
@@ -86,16 +88,49 @@ const client = new Client({
 // Bind the HTTP port immediately so cloud health checks work before WhatsApp login completes.
 startServer(client, {
     isClientReady: () => whatsappReady,
-    getLatestQr: () => latestQr
+    // Never show a QR that WhatsApp may already have expired.
+    getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null
 });
+
+function clearQrRefreshTimer() {
+    if (qrRefreshTimer) clearTimeout(qrRefreshTimer);
+    qrRefreshTimer = null;
+}
+
+function scheduleQrRefresh() {
+    clearQrRefreshTimer();
+    qrRefreshTimer = setTimeout(async () => {
+        if (whatsappReady || !client.pupPage) return;
+        try {
+            const requested = await client.pupPage.evaluate(() => {
+                const socket = window.require?.('WAWebSocketModel')?.Socket;
+                if (!socket || !['UNPAIRED', 'UNPAIRED_IDLE'].includes(socket.state)) return false;
+                const command = window.require?.('WAWebCmd')?.Cmd;
+                if (typeof command?.refreshQR !== 'function') return false;
+                command.refreshQR();
+                return true;
+            });
+            if (requested) console.log('Requested a fresh WhatsApp QR code.');
+        } catch (error) {
+            console.warn('Could not refresh WhatsApp QR:', error.message || error);
+        }
+        // Retry if WhatsApp did not emit a replacement QR.
+        if (!whatsappReady) scheduleQrRefresh();
+    }, 45000);
+}
 
 client.on('qr', (qr) => {
     latestQr = qr;
+    latestQrAt = Date.now();
+    scheduleQrRefresh();
     console.log('Please scan the QR code below to link the bot:');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
+    clearQrRefreshTimer();
+    latestQr = null;
+    latestQrAt = 0;
     console.log('WhatsApp authentication completed; waiting for the client to become ready...');
 });
 
@@ -109,7 +144,9 @@ client.on('change_state', (state) => {
 
 client.on('ready', () => {
     whatsappReady = true;
+    clearQrRefreshTimer();
     latestQr = null;
+    latestQrAt = 0;
     console.log('WhatsApp Bot is ready and connected!');
     // Boot all active schedules from the database
     if (!schedulerBooted) {
@@ -124,13 +161,17 @@ client.on('remote_session_saved', () => {
 
 client.on('auth_failure', (message) => {
     whatsappReady = false;
+    clearQrRefreshTimer();
     latestQr = null;
+    latestQrAt = 0;
     console.error('WhatsApp authentication failed:', message);
 });
 
 client.on('disconnected', (reason) => {
     whatsappReady = false;
+    clearQrRefreshTimer();
     latestQr = null;
+    latestQrAt = 0;
     console.warn('WhatsApp disconnected:', reason);
 });
 
