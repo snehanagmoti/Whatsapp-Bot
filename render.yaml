@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: whatsapp-screenshot-bot
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: LOOKER_ACTION_TOKEN
+        generateValue: true
+      - key: LOOKER_ALLOWED_CHAT_IDS
+        sync: false
+      - key: ENABLE_COOKIE_AUTH_PORTAL
+        value: "false"
+    disk:
+      name: whatsapp-bot-data
+      mountPath: /var/data
+      sizeGB: 1

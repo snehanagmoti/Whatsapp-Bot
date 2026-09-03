@@ -1,10 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const DB_FILE = path.join(__dirname, 'database.json');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || __dirname);
+const DB_FILE = path.join(DATA_DIR, 'database.json');
 
 // Initialize database if it doesn't exist
 function initDb() {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     if (!fs.existsSync(DB_FILE)) {
         fs.writeFileSync(DB_FILE, JSON.stringify({ chats: {} }, null, 2));
     }

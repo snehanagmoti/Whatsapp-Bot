@@ -1,5 +1,31 @@
 const puppeteer = require('puppeteer');
+const path = require('path');
+const { isValidWhatsAppChatId } = require('./validation');
 require('dotenv').config();
+
+const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
+
+function getProfilePath(chatId) {
+    if (!isValidWhatsAppChatId(chatId)) throw new Error('Invalid WhatsApp chat ID.');
+    return path.join(dataDir, 'user_data_profiles', chatId);
+}
+
+function validateDashboardUrl(value) {
+    let url;
+    try {
+        url = new URL(value);
+    } catch {
+        throw new Error('Invalid dashboard URL.');
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+        throw new Error('Dashboard URL must use HTTP(S) and must not contain credentials.');
+    }
+    const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '::1'];
+    if (blocked.includes(url.hostname.toLowerCase()) && process.env.ALLOW_PRIVATE_NETWORKS !== 'true') {
+        throw new Error('Local or private dashboard URLs are disabled.');
+    }
+    return url.toString();
+}
 
 /**
  * Launches Puppeteer, navigates to the URL, and captures a screenshot.
@@ -9,12 +35,13 @@ require('dotenv').config();
  * @returns {Buffer} - The screenshot image buffer.
  */
 async function captureScreenshot(url, chatId) {
+    url = validateDashboardUrl(url);
     console.log(`Starting screenshot capture for: ${url} (Profile: ${chatId})`);
     
     // Launch a headless browser instance with an isolated profile directory
     const browser = await puppeteer.launch({
         headless: "new",
-        userDataDir: `./user_data_profiles/${chatId}`, 
+        userDataDir: getProfilePath(chatId),
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -36,7 +63,7 @@ async function captureScreenshot(url, chatId) {
         console.log('Navigating to page...');
         // Go to URL and wait until there are no more than 2 network connections for at least 500 ms.
         // This helps ensure charts and data are fully loaded.
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: process.env.PUPPETEER_TIMEOUT || 60000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: Number(process.env.PUPPETEER_TIMEOUT) || 60000 });
         
         // Looker-Specific Waiting Logic (Option B Implementation)
         if (url.toLowerCase().includes('looker')) {
@@ -75,6 +102,7 @@ async function captureScreenshot(url, chatId) {
  * Parses the provided JSON cookies and injects them directly into the browser session.
  */
 async function authenticateSession(url, chatId, cookieString) {
+    url = validateDashboardUrl(url);
     console.log(`Starting headless session injection for: ${url} (Profile: ${chatId})`);
     
     let parsedCookies;
@@ -89,7 +117,7 @@ async function authenticateSession(url, chatId, cookieString) {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        userDataDir: `./user_data_profiles/${chatId}`, 
+        userDataDir: getProfilePath(chatId),
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -111,7 +139,7 @@ async function authenticateSession(url, chatId, cookieString) {
         
         console.log('Navigating to verify session (Fail-safe)...');
         try {
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: process.env.PUPPETEER_TIMEOUT || 60000 });
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: Number(process.env.PUPPETEER_TIMEOUT) || 60000 });
         } catch (navError) {
             console.log(`Navigation error during verification (common for Cloudflare), but cookies are injected. Proceeding. Error: ${navError.message}`);
         }
@@ -127,5 +155,6 @@ async function authenticateSession(url, chatId, cookieString) {
 
 module.exports = {
     captureScreenshot,
-    authenticateSession
+    authenticateSession,
+    validateDashboardUrl
 };

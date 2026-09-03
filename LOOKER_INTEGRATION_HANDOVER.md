@@ -52,3 +52,19 @@ If deploying to a free tier, the server will sleep after 15 minutes of inactivit
 1. Go to any WhatsApp group and type `!chatid`. Copy the ID.
 2. Go to a dashboard in Looker -> Schedule Delivery.
 3. Choose "WhatsApp Bot" as the destination, paste the Chat ID, and click Send!
+
+---
+
+## Codex Continuation
+
+The production-critical local work is now implemented on `codex/looker-hardening`:
+
+- Corrected the Action Hub contract: Looker can POST to `/actions` (or the configured root/list endpoint), the manifest uses `wysiwyg_png`, `push`, and the required hub metadata.
+- Added Action Hub token verification using Looker's `Authorization: Token token="..."` format.
+- Added a WhatsApp destination allowlist, strict chat-ID/PNG validation, payload limits, and clear failure responses.
+- Started the HTTP server before WhatsApp authentication so Render health checks succeed; added `/healthz` and `/readyz`.
+- Added `DATA_DIR` support and a paid Render persistent disk Blueprint so WhatsApp auth, report configuration, and browser profiles survive restarts.
+- Added `.dockerignore`, pinned the Puppeteer image, changed Docker installation to `npm ci`, and disabled the unsafe cookie-import portal by default.
+- Added automated tests for manifest authentication, readiness, successful delivery, and destination authorization.
+
+Remaining work requires external accounts: push the branch, create the Render Blueprint/service, configure its environment values, scan the WhatsApp QR code, add the authenticated `/actions` endpoint in Looker, and run a real scheduled dashboard delivery.

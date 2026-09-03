@@ -1,18 +1,30 @@
+require('dotenv').config();
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const path = require('path');
 const qrcode = require('qrcode-terminal');
 const { captureScreenshot } = require('./screenshot');
 const db = require('./db');
 const scheduler = require('./scheduler');
 const { startServer } = require('./server');
-require('dotenv').config();
 
 // In-memory state machine to track conversations
 // Structure: { "chatId": { state: "AWAITING_URL", tempReport: { url: "..." } } }
 const chatStates = {};
 
+const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
+let whatsappReady = false;
+let schedulerBooted = false;
+
 const client = new Client({
-    authStrategy: new LocalAuth()
+    authStrategy: new LocalAuth({ dataPath: path.join(dataDir, '.wwebjs_auth') }),
+    puppeteer: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    }
 });
+
+// Bind the HTTP port immediately so cloud health checks work before WhatsApp login completes.
+startServer(client, { isClientReady: () => whatsappReady });
 
 client.on('qr', (qr) => {
     console.log('Please scan the QR code below to link the bot:');
@@ -20,12 +32,23 @@ client.on('qr', (qr) => {
 });
 
 client.on('ready', () => {
+    whatsappReady = true;
     console.log('WhatsApp Bot is ready and connected!');
     // Boot all active schedules from the database
-    scheduler.bootScheduler(client);
-    
-    // Start the Credential Web Portal
-    startServer(client);
+    if (!schedulerBooted) {
+        scheduler.bootScheduler(client);
+        schedulerBooted = true;
+    }
+});
+
+client.on('auth_failure', (message) => {
+    whatsappReady = false;
+    console.error('WhatsApp authentication failed:', message);
+});
+
+client.on('disconnected', (reason) => {
+    whatsappReady = false;
+    console.warn('WhatsApp disconnected:', reason);
 });
 
 client.on('message_create', async (message) => {
@@ -93,7 +116,11 @@ client.on('message_create', async (message) => {
         }
 
         // Generate the magic link
-        const serverIp = 'http://localhost:3000'; // Replace with actual server IP/domain in production
+        if (process.env.ENABLE_COOKIE_AUTH_PORTAL !== 'true') {
+            await client.sendMessage(targetChatId, 'Cookie-based authentication is disabled. Use the user-controlled login procedure described in the deployment guide.');
+            return;
+        }
+        const serverIp = (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
         const magicLink = `${serverIp}/login?chatId=${encodeURIComponent(targetChatId)}&url=${encodeURIComponent(report.url)}`;
         
         await client.sendMessage(targetChatId, `🔐 *Authentication Required*\n\nPlease log in to authenticate the *${report.name}* dashboard.\n\nClick the secure link below to enter your credentials:\n${magicLink}`);

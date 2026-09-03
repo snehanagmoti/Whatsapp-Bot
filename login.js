@@ -1,10 +1,12 @@
 const puppeteer = require('puppeteer');
+const path = require('path');
+const { isValidWhatsAppChatId } = require('./validation');
 
 const args = process.argv.slice(2);
 const chatId = args[0];
 const url = args[1];
 
-if (!chatId || !url) {
+if (!isValidWhatsAppChatId(chatId) || !url) {
     console.error('Usage: node login.js <ChatID> <URL>');
     console.error('Example: node login.js 1234567890@c.us https://leetcode.com/login');
     process.exit(1);
@@ -16,7 +18,7 @@ if (!chatId || !url) {
 
     const browser = await puppeteer.launch({
         headless: false, // VISIBLE mode for manual login
-        userDataDir: `./user_data_profiles/${chatId}`,
+        userDataDir: path.join(path.resolve(process.env.DATA_DIR || __dirname), 'user_data_profiles', chatId),
         args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 

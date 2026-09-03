@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+.wwebjs_auth
+.wwebjs_cache
+user_data
+user_data_profiles
+database.json
+scratch
+*.log
+*.pdf

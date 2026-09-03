@@ -21,3 +21,20 @@ For full details on how this project works and how to use it, please see the inc
 3. Run `node index.js`.
 4. Scan the QR code with your WhatsApp app (Linked Devices).
 5. Send `!addreport` to the bot in WhatsApp to configure your first dashboard!
+
+## Looker / Render Deployment
+
+1. Copy `.env.example` values into Render environment variables. Set `PUBLIC_BASE_URL` to the final HTTPS service URL.
+2. Keep the generated `LOOKER_ACTION_TOKEN` secret and enter the same value as the Action Hub authentication token in Looker.
+3. Add only approved IDs to `LOOKER_ALLOWED_CHAT_IDS` (comma-separated). Obtain each ID with `!chatid`.
+4. Deploy with `render.yaml`. It deliberately uses a paid Starter service plus a persistent disk mounted at `/var/data`; WhatsApp login state, schedules, and browser sessions are otherwise lost on every restart.
+5. In Looker Admin -> Platform -> Actions, add `https://your-service.onrender.com/actions` as the Action Hub URL and supply the authentication token.
+6. Watch the first deploy logs and scan the WhatsApp QR code. Wait at least one minute before restarting so the linked-device session is fully written to disk.
+
+`/healthz` confirms the web service is running. `/readyz` returns HTTP 200 only after WhatsApp is connected. The optional cookie-import portal is disabled by default because pasted session cookies are credentials; enabling it is not recommended for production.
+
+### Important Limitations
+
+- `whatsapp-web.js` is an unofficial client and can break when WhatsApp Web changes or can trigger account restrictions. Use a dedicated bot number.
+- A Render free web service cannot use a persistent disk and spins down when idle, so it is unsuitable for a continuously connected WhatsApp session.
+- Private dashboards still require a user-controlled authentication design. The local `login.js` flow is acceptable for a prototype on a trusted machine, but it is not a secure remote multi-user login service.
