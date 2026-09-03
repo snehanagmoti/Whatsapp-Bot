@@ -62,6 +62,12 @@ client.on('message_create', async (message) => {
         return;
     }
 
+    // Command: !chatid (Utility for Looker Integration)
+    if (text === '!chatid') {
+        await client.sendMessage(targetChatId, `Your WhatsApp Chat ID is:\n\n*${targetChatId}*\n\nUse this ID when scheduling reports in Looker.`);
+        return;
+    }
+
     // Command: !removereport [name]
     if (text.startsWith('!removereport ')) {
         const reportName = text.replace('!removereport ', '').trim();

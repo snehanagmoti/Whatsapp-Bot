@@ -15,12 +15,19 @@ async function captureScreenshot(url, chatId) {
     const browser = await puppeteer.launch({
         headless: "new",
         userDataDir: `./user_data_profiles/${chatId}`, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled'
+        ]
     });
 
     const page = await browser.newPage();
     // Spoof a normal desktop User-Agent to bypass basic Cloudflare/WAF bot detection (ERR_CONNECTION_RESET)
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9'
+    });
     
     // Set a phone-like viewport to make the dashboard more readable on mobile
     await page.setViewport({ width: 600, height: 1200, deviceScaleFactor: 2 });
@@ -31,8 +38,24 @@ async function captureScreenshot(url, chatId) {
         // This helps ensure charts and data are fully loaded.
         await page.goto(url, { waitUntil: 'networkidle2', timeout: process.env.PUPPETEER_TIMEOUT || 60000 });
         
-        // Additional explicit wait for a common selector can be added here if needed
-        // await page.waitForSelector('.dashboard-loaded-marker', { timeout: 10000 });
+        // Looker-Specific Waiting Logic (Option B Implementation)
+        if (url.toLowerCase().includes('looker')) {
+            console.log('Looker URL detected. Applying Looker-specific wait conditions...');
+            // Wait an additional 8 seconds to allow Looker's internal JS to render the Canvas/SVG charts
+            await new Promise(r => setTimeout(r, 8000));
+            
+            // Optionally wait for Looker specific selectors to ensure it's not a loading screen
+            try {
+                // Wait for either the dashboard layout or explore layout to be present
+                await page.waitForSelector('.lk-dashboard-layout, .explore-container, .vis-container', { timeout: 10000 });
+                console.log('Looker specific elements detected.');
+                // Another small buffer after the DOM elements appear for final chart paint
+                await new Promise(r => setTimeout(r, 2000));
+            } catch (e) {
+                console.log('Could not find standard Looker selectors, but proceeding with screenshot anyway.');
+            }
+        }
+
         
         console.log('Taking screenshot...');
         const screenshotBuffer = await page.screenshot({ fullPage: true });
@@ -67,12 +90,19 @@ async function authenticateSession(url, chatId, cookieString) {
     const browser = await puppeteer.launch({
         headless: "new",
         userDataDir: `./user_data_profiles/${chatId}`, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled'
+        ]
     });
 
     const page = await browser.newPage();
     // Spoof a normal desktop User-Agent to bypass basic Cloudflare/WAF bot detection (ERR_CONNECTION_RESET)
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9'
+    });
     await page.setViewport({ width: 1280, height: 800 });
 
     try {
