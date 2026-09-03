@@ -5,6 +5,22 @@ require('dotenv').config();
 
 const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
 
+// These launches are short-lived but still share the 512 MB Render Free
+// instance with the always-on WhatsApp browser.
+const screenshotBrowserArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-default-apps',
+    '--no-first-run',
+    '--mute-audio',
+    '--disable-blink-features=AutomationControlled'
+];
+
 function getProfilePath(chatId) {
     if (!isValidWhatsAppChatId(chatId)) throw new Error('Invalid WhatsApp chat ID.');
     return path.join(dataDir, 'user_data_profiles', chatId);
@@ -42,11 +58,7 @@ async function captureScreenshot(url, chatId) {
     const browser = await puppeteer.launch({
         headless: "new",
         userDataDir: getProfilePath(chatId),
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled'
-        ]
+        args: screenshotBrowserArgs
     });
 
     const page = await browser.newPage();
@@ -57,7 +69,7 @@ async function captureScreenshot(url, chatId) {
     });
     
     // Set a phone-like viewport to make the dashboard more readable on mobile
-    await page.setViewport({ width: 600, height: 1200, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 600, height: 1200, deviceScaleFactor: 1 });
 
     try {
         console.log('Navigating to page...');
@@ -118,11 +130,7 @@ async function authenticateSession(url, chatId, cookieString) {
     const browser = await puppeteer.launch({
         headless: "new",
         userDataDir: getProfilePath(chatId),
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled'
-        ]
+        args: screenshotBrowserArgs
     });
 
     const page = await browser.newPage();

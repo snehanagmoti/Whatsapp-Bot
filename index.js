@@ -54,12 +54,28 @@ function resolveBrowserExecutable() {
 
 const browserExecutable = resolveBrowserExecutable();
 
+// Render Free provides 512 MB RAM. Keeping Chromium to a single process is
+// important because the normal multi-process layout can exceed that limit
+// while WhatsApp Web finishes linking a device.
+const whatsappBrowserArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-default-apps',
+    '--no-first-run',
+    '--mute-audio'
+];
+
 const client = new Client({
     authStrategy,
     puppeteer: {
         headless: true,
         ...(browserExecutable ? { executablePath: browserExecutable } : {}),
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        args: whatsappBrowserArgs
     }
 });
 
@@ -73,6 +89,10 @@ client.on('qr', (qr) => {
     latestQr = qr;
     console.log('Please scan the QR code below to link the bot:');
     qrcode.generate(qr, { small: true });
+});
+
+client.on('authenticated', () => {
+    console.log('WhatsApp authentication completed; waiting for the client to become ready...');
 });
 
 client.on('ready', () => {
