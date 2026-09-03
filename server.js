@@ -2,6 +2,8 @@ const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const { MessageMedia } = require('whatsapp-web.js');
+const QRCode = require('qrcode-terminal/vendor/QRCode');
+const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel');
 const { authenticateSession } = require('./screenshot');
 const { isValidWhatsAppChatId, parseCsvSet } = require('./validation');
 
@@ -50,9 +52,25 @@ function buildActionList(baseUrl) {
     };
 }
 
+function qrToSvg(value) {
+    const qr = new QRCode(-1, QRErrorCorrectLevel.L);
+    qr.addData(value);
+    qr.make();
+    const quietZone = 4;
+    const size = qr.getModuleCount() + (quietZone * 2);
+    const cells = [];
+    for (let row = 0; row < qr.getModuleCount(); row += 1) {
+        for (let col = 0; col < qr.getModuleCount(); col += 1) {
+            if (qr.isDark(row, col)) cells.push(`M${col + quietZone} ${row + quietZone}h1v1h-1z`);
+        }
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="white"/><path d="${cells.join('')}" fill="black"/></svg>`;
+}
+
 function createApp({
     client,
     isClientReady = () => Boolean(client && client.info),
+    getLatestQr = () => null,
     lookerToken = process.env.LOOKER_ACTION_TOKEN,
     allowedChatIds = parseCsvSet(process.env.LOOKER_ALLOWED_CHAT_IDS),
     publicBaseUrl = process.env.PUBLIC_BASE_URL,
@@ -82,6 +100,25 @@ function createApp({
     app.get('/readyz', (req, res) => {
         const ready = Boolean(isClientReady());
         res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
+    });
+
+    // Render's log viewer distorts terminal QR blocks. This setup-only page
+    // fetches a clean SVG using the existing secret action token. Keeping the
+    // token in the URL fragment prevents it from being sent in request URLs.
+    app.get('/setup/qr', (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Link WhatsApp Bot</title><style>body{font-family:system-ui,sans-serif;margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f7f8;color:#172b24}.card{width:min(92vw,520px);padding:28px;background:#fff;border-radius:18px;box-shadow:0 10px 35px #0002;text-align:center}img{width:min(78vw,430px);height:auto;image-rendering:pixelated}p{line-height:1.5}.error{color:#a62929}</style></head><body><main class="card"><h1>Link WhatsApp Bot</h1><p id="status">Loading the latest secure QR code…</p><img id="qr" alt="WhatsApp linking QR code" hidden></main><script>const token=location.hash.slice(1);const status=document.getElementById('status');const image=document.getElementById('qr');async function refresh(){if(!token){status.className='error';status.textContent='The secure setup link is incomplete.';return;}try{const response=await fetch('/setup/qr.svg',{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(response.status===409){image.hidden=true;status.textContent='Connected successfully. You may close this page.';return;}if(!response.ok){image.hidden=true;status.className='error';status.textContent=response.status===425?'Waiting for a fresh QR code…':'Unable to load the QR code.';return;}const blob=await response.blob();const old=image.src;image.src=URL.createObjectURL(blob);if(old)URL.revokeObjectURL(old);image.hidden=false;status.className='';status.textContent='WhatsApp → Settings → Linked devices → Link a device';}catch{status.className='error';status.textContent='Could not refresh the QR code.';}}refresh();setInterval(refresh,5000);</script></body></html>`);
+    });
+
+    app.get('/setup/qr.svg', (req, res) => {
+        if (!lookerToken) return res.status(503).send('Setup token is not configured.');
+        const supplied = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
+        if (!supplied || !secretsMatch(supplied[1], lookerToken)) return res.status(401).send('Unauthorized.');
+        if (isClientReady()) return res.status(409).send('WhatsApp is already connected.');
+        const qr = getLatestQr();
+        if (!qr) return res.status(425).send('Waiting for a QR code.');
+        res.set('Cache-Control', 'no-store');
+        return res.type('image/svg+xml').send(qrToSvg(qr));
     });
 
     app.get('/login', (req, res) => {

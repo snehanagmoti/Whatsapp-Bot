@@ -18,6 +18,7 @@ const dataDir = path.resolve(process.env.DATA_DIR || __dirname);
 const authDataPath = path.join(dataDir, '.wwebjs_auth');
 let whatsappReady = false;
 let schedulerBooted = false;
+let latestQr = null;
 
 const remoteStore = process.env.MONGODB_URI
     ? new MongoGridFsStore({
@@ -63,15 +64,20 @@ const client = new Client({
 });
 
 // Bind the HTTP port immediately so cloud health checks work before WhatsApp login completes.
-startServer(client, { isClientReady: () => whatsappReady });
+startServer(client, {
+    isClientReady: () => whatsappReady,
+    getLatestQr: () => latestQr
+});
 
 client.on('qr', (qr) => {
+    latestQr = qr;
     console.log('Please scan the QR code below to link the bot:');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
     whatsappReady = true;
+    latestQr = null;
     console.log('WhatsApp Bot is ready and connected!');
     // Boot all active schedules from the database
     if (!schedulerBooted) {
@@ -86,11 +92,13 @@ client.on('remote_session_saved', () => {
 
 client.on('auth_failure', (message) => {
     whatsappReady = false;
+    latestQr = null;
     console.error('WhatsApp authentication failed:', message);
 });
 
 client.on('disconnected', (reason) => {
     whatsappReady = false;
+    latestQr = null;
     console.warn('WhatsApp disconnected:', reason);
 });
 
