@@ -1,7 +1,9 @@
 require('dotenv').config();
 const { Client, LocalAuth, MessageMedia, RemoteAuth } = require('whatsapp-web.js');
 const path = require('path');
+const fs = require('fs');
 const qrcode = require('qrcode-terminal');
+const puppeteer = require('puppeteer');
 const { captureScreenshot } = require('./screenshot');
 const db = require('./db');
 const scheduler = require('./scheduler');
@@ -34,10 +36,26 @@ const authStrategy = remoteStore
     })
     : new LocalAuth({ dataPath: authDataPath });
 
+// whatsapp-web.js bundles its own Puppeteer version, which can expect a
+// different Chrome revision than the official Puppeteer Docker image. Prefer
+// the browser installed for this application's pinned Puppeteer dependency.
+function resolveBrowserExecutable() {
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+    try {
+        const executablePath = puppeteer.executablePath();
+        return fs.existsSync(executablePath) ? executablePath : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+const browserExecutable = resolveBrowserExecutable();
+
 const client = new Client({
     authStrategy,
     puppeteer: {
         headless: true,
+        ...(browserExecutable ? { executablePath: browserExecutable } : {}),
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     }
 });
