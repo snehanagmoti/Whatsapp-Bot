@@ -43,7 +43,9 @@ function resolveBrowserExecutable() {
     if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
     try {
         const executablePath = puppeteer.executablePath();
-        return fs.existsSync(executablePath) ? executablePath : undefined;
+        return typeof executablePath === 'string' && fs.existsSync(executablePath)
+            ? executablePath
+            : undefined;
     } catch {
         return undefined;
     }
