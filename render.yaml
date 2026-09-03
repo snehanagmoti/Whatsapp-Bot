@@ -3,7 +3,6 @@ services:
     name: whatsapp-screenshot-bot
     runtime: docker
     plan: free
-    healthCheckPath: /healthz
     envVars:
       - key: DATA_DIR
         value: /tmp/whatsapp-bot
