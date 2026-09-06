@@ -19,6 +19,11 @@ function secretsMatch(actual, expected) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function secretFingerprint(value) {
+    const text = String(value || '');
+    return text ? crypto.createHash('sha256').update(text).digest('hex').slice(0, 10) : 'missing';
+}
+
 function decodePngBase64(value, maxBytes = DEFAULT_MAX_IMAGE_BYTES) {
     if (typeof value !== 'string') throw new Error('Image attachment data must be a base64 string.');
     const data = value.replace(/^data:image\/png;base64,/i, '').replace(/\s/g, '');
@@ -97,9 +102,15 @@ function createApp({
     const requireStudioToken = (req, res, next) => {
         if (!studioIngestToken) return res.status(503).json({ error: 'STUDIO_INGEST_TOKEN is not configured.' });
         const match = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
-        return match && secretsMatch(match[1], studioIngestToken)
-            ? next()
-            : res.status(401).json({ error: 'Unauthorized.' });
+        const supplied = match && match[1];
+        if (supplied && secretsMatch(supplied, studioIngestToken)) return next();
+        console.warn('Studio ingestion token rejected:', {
+            expectedLength: String(studioIngestToken).length,
+            suppliedLength: String(supplied || '').length,
+            expectedFingerprint: secretFingerprint(studioIngestToken),
+            suppliedFingerprint: secretFingerprint(supplied)
+        });
+        return res.status(401).json({ error: 'Unauthorized.' });
     };
 
     app.get('/healthz', (req, res) => res.json({ status: 'ok', whatsappReady: Boolean(isClientReady()) }));
