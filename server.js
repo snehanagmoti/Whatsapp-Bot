@@ -131,6 +131,11 @@ function createApp({
         if (!studioEmailService) return res.status(503).json({ error: 'Looker Studio email ingestion is not configured.' });
         try {
             const result = await studioEmailService.process(req.body || {});
+            console.log('Looker Studio email delivery completed:', {
+                messageId: req.body && req.body.messageId,
+                duplicate: Boolean(result.duplicate),
+                deliveredPages: result.deliveredPages
+            });
             return res.json({ success: true, ...result });
         } catch (error) {
             console.error('Looker Studio email ingestion failed:', error.message || error);

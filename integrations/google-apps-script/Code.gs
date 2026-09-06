@@ -11,6 +11,9 @@ function installReportForwarder() {
 }
 
 function forwardUnreadReports() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return;
+  try {
   var properties = PropertiesService.getScriptProperties();
   var ingestUrl = properties.getProperty('BOT_INGEST_URL');
   var ingestToken = properties.getProperty('BOT_INGEST_TOKEN');
@@ -22,11 +25,22 @@ function forwardUnreadReports() {
   var mailboxParts = mailbox.toLowerCase().split('@');
   var routingPrefix = mailboxParts[0] + '+';
   var routingDomain = '@' + mailboxParts[1];
-  var threads = GmailApp.search('is:unread has:attachment filename:pdf newer_than:2d', 0, 20);
+  var processedKey = 'PROCESSED_MESSAGE_IDS';
+  var processedIds;
+  try {
+    processedIds = JSON.parse(properties.getProperty(processedKey) || '[]');
+  } catch (error) {
+    processedIds = [];
+  }
+  if (!Array.isArray(processedIds)) processedIds = [];
+  var processed = {};
+  processedIds.forEach(function (id) { processed[id] = true; });
+  var threads = GmailApp.search('has:attachment filename:pdf newer_than:2d', 0, 20);
 
   threads.forEach(function (thread) {
     thread.getMessages().forEach(function (message) {
-      if (!message.isUnread()) return;
+      var gmailMessageId = message.getId();
+      if (processed[gmailMessageId]) return;
       var recipients = message.getTo();
       var normalizedRecipients = recipients.toLowerCase();
       if (normalizedRecipients.indexOf(routingPrefix) < 0 || normalizedRecipients.indexOf(routingDomain) < 0) return;
@@ -47,7 +61,7 @@ function forwardUnreadReports() {
         contentType: 'application/json',
         headers: { Authorization: 'Bearer ' + ingestToken },
         payload: JSON.stringify({
-          messageId: 'gmail:' + message.getId(),
+          messageId: 'gmail:' + gmailMessageId,
           from: message.getFrom(),
           to: recipients,
           subject: message.getSubject(),
@@ -57,8 +71,18 @@ function forwardUnreadReports() {
       });
 
       var status = response.getResponseCode();
-      if (status >= 200 && status < 300) message.markRead();
-      else console.error('Bot rejected Gmail message %s with HTTP %s: %s', message.getId(), status, response.getContentText());
+      if (status >= 200 && status < 300) {
+        processed[gmailMessageId] = true;
+        processedIds.unshift(gmailMessageId);
+        processedIds = processedIds.slice(0, 200);
+        properties.setProperty(processedKey, JSON.stringify(processedIds));
+        console.log('Forwarded Gmail message %s successfully.', gmailMessageId);
+      } else {
+        console.error('Bot rejected Gmail message %s with HTTP %s: %s', gmailMessageId, status, response.getContentText());
+      }
     });
   });
+  } finally {
+    lock.releaseLock();
+  }
 }
