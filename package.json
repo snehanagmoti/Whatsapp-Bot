@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
-    "check": "node --check index.js && node --check server.js && node --check screenshot.js && node --check scheduler.js && node --check db.js && node --check whatsappClient.js && node --check baileysAuthStore.js"
+    "check": "node --check index.js && node --check server.js && node --check whatsappClient.js && node --check baileysAuthStore.js && node --check studioStore.js && node --check studioRouting.js && node --check studioEmailService.js && node --check studioCommands.js && node --check pdfProcessor.js"
   },
   "keywords": [],
   "author": "",
@@ -16,8 +16,6 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mongodb": "^6.21.0",
-    "node-cron": "^4.6.0",
-    "puppeteer": "^25.9.0",
     "pino": "^9.6.0",
     "qrcode-terminal": "^0.12.0"
   }

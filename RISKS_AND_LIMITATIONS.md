@@ -1,28 +1,37 @@
-# Risks, Limitations, and Mitigation Strategies
+# Risks and Limitations
 
-While this bot architecture is highly capable, utilizing reverse-engineered APIs (`whatsapp-web.js`) and headless browsers (`Puppeteer`) introduces several risks.
+## Looker Studio integration boundary
 
-## 1. WhatsApp Account Bans
-**Risk:** Meta strictly prohibits automated bots on standard personal or standard business WhatsApp accounts. Sending hundreds of automated messages, especially to users who have not saved the bot's number, can trigger spam algorithms resulting in a permanent phone number ban.
-**Mitigation:** 
-*   Use a dedicated phone number (do not use your personal primary number).
-*   Limit outbound messages to groups where the bot is invited, rather than cold DM-ing users.
-*   If volume becomes enterprise-scale, migrate from `whatsapp-web.js` to the Official Meta Cloud API (though this loses the ability to join generic groups easily).
+Looker Studio has no documented private Action Hub mechanism. The bot cannot appear as a custom WhatsApp destination beside its native Slack destination. Users must configure an email delivery to the generated routing address.
 
-## 2. Puppeteer & Authentication Roadblocks (CAPTCHAs & 2FA)
-**Risk:** Major providers (Google, Microsoft) can detect automated browsers and may randomly throw CAPTCHAs or block logins. Furthermore, Multi-Factor Authentication (OTP codes) prevents the bot from logging in automatically.
-**Mitigation:**
-*   **The Service Account Model**: Never have the bot ask for passwords over chat. Instead, create a generic `reports-bot@company.com` account.
-*   **Manual Login Script**: Use the included `login.js` script to manually open the browser, type the password, click the CAPTCHA, and save the session cookies permanently. 
-*   **Long-Lived Sessions**: Ensure the dashboards being scraped have long-lived session timeouts (e.g., 90 days) so the admin rarely has to re-authenticate.
+## PDF rather than native screenshot
 
-## 3. Asynchronous Dashboard Rendering
-**Risk:** BI tools (Looker, Metabase, Tableau) load the webpage instantly but take 5-10 seconds to fetch data. Puppeteer might capture a screenshot of "loading spinners."
-**Mitigation:**
-*   Add a hardcoded `await new Promise(r => setTimeout(r, 5000));` delay before taking the screenshot in `screenshot.js`.
-*   Alternatively, use `page.waitForSelector('.chart-loaded')` to dynamically wait for the specific dashboard element to render.
+Looker Studio schedules a PDF. Poppler converts its pages to PNG, so the WhatsApp image represents the scheduled PDF layout rather than an interactive browser viewport. Complex reports can time out or contain chart errors before the email reaches the bot.
 
-## 4. PDFs vs Screenshots
-**Risk:** The initial concept was to download PDFs, but generating authentic PDFs of dynamic, authenticated dashboards via headless Chrome often strips CSS, requires massive compute power, and breaks authentication states during the print-to-pdf conversion.
-**Mitigation:**
-*   We exclusively rely on high-resolution `.png` screenshots. This perfectly mimics what a human sees on their monitor, guarantees CSS preservation, and works flawlessly with the existing auth cookies.
+## Routing address secrecy
+
+A generated routing address is a bearer capability. Anyone who obtains it may attempt to inject a PDF into the destination. Routes are random, hashed at rest, allowlisted, rate-limited operationally, and revocable, but production should additionally validate the genuine Looker Studio sender and use first-delivery approval.
+
+## Email delivery delay and duplication
+
+Email and Apps Script are not real-time. Apps Script may run several minutes late and may retry. MongoDB message-ID claims prevent completed or concurrent duplicate deliveries, while failed deliveries can be retried.
+
+## Free-tier reliability
+
+Render free services sleep and may cold-start during a scheduled delivery. Apps Script and Gmail have execution quotas. MongoDB M0 lacks production guarantees. These components are suitable for demonstration, not an SLA-backed service.
+
+## WhatsApp transport
+
+Baileys is an unofficial WhatsApp Web protocol implementation. WhatsApp changes can break it, and the linked number can be restricted. Use a dedicated prototype number. Production should use the official WhatsApp Business Platform if its recipient and group capabilities satisfy the company requirement; otherwise the residual risk requires formal approval.
+
+## Authorization
+
+Group-administrator checks depend on WhatsApp metadata. Individual-chat route creation must be restricted through `STUDIO_ROUTE_ADMIN_IDS`. Production should connect route management to corporate identity and preserve an audit trail when staff change roles.
+
+## Data exposure
+
+Scheduled PDFs may contain confidential data. The routing mailbox, ingestion service, temporary files, logs and WhatsApp destination must all follow company classification and retention rules. The converter deletes temporary files after processing, but backup, crash-dump and observability configuration also require review.
+
+## Scale
+
+Dynamic routing avoids physical alias limits, but the mailbox, PDF renderer, memory, database and WhatsApp throughput remain finite. Production needs bounded page and file sizes, a durable queue, concurrency controls, rate limits, backpressure and failure alerts.

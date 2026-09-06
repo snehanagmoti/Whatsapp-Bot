@@ -1,262 +1,128 @@
 require('dotenv').config();
 const qrcode = require('qrcode-terminal');
-const db = require('./db');
-const scheduler = require('./scheduler');
+const { convertPdfToPngPages } = require('./pdfProcessor');
 const { startServer } = require('./server');
+const { handleStudioCommand } = require('./studioCommands');
+const { StudioEmailService } = require('./studioEmailService');
+const { StudioRouteService } = require('./studioRouting');
+const { MongoStudioStore } = require('./studioStore');
+const { parseCsvSet } = require('./validation');
 const { WhatsAppClient } = require('./whatsappClient');
 
-// In-memory state machine to track conversations
-// Structure: { "chatId": { state: "AWAITING_URL", tempReport: { url: "..." } } }
-const chatStates = {};
-
 let whatsappReady = false;
-let schedulerBooted = false;
 let latestQr = null;
 let latestQrAt = 0;
+let server = null;
+let studioStore = null;
+
 const client = new WhatsAppClient({
     mongoUri: process.env.MONGODB_URI,
     dbName: process.env.MONGODB_DB_NAME || 'whatsapp_bot',
     sessionId: process.env.WWEBJS_CLIENT_ID || 'bot'
 });
 
-// Bind the HTTP port immediately so cloud health checks work before WhatsApp login completes.
-startServer(client, {
-    isClientReady: () => whatsappReady,
-    // Never show a QR that WhatsApp may already have expired.
-    getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null
-});
-
-client.on('qr', (qr) => {
-    latestQr = qr;
-    latestQrAt = Date.now();
-    console.log('Please scan the QR code below to link the bot:');
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('authenticated', () => {
-    latestQr = null;
-    latestQrAt = 0;
-    console.log('WhatsApp authentication completed; waiting for the client to become ready...');
-});
-
-client.on('loading_screen', (percent, message) => {
-    console.log(`WhatsApp loading: ${percent}% ${message || ''}`.trim());
-});
-
-client.on('change_state', (state) => {
-    console.log(`WhatsApp connection state: ${state}`);
-});
-
-client.on('ready', () => {
-    whatsappReady = true;
-    latestQr = null;
-    latestQrAt = 0;
-    console.log('WhatsApp Bot is ready and connected!');
-    // Boot all active schedules from the database
-    if (!schedulerBooted) {
-        scheduler.bootScheduler(client);
-        schedulerBooted = true;
-    }
-});
-
-client.on('remote_session_saved', () => {
-    console.log('WhatsApp session backup saved to MongoDB.');
-});
-
-client.on('auth_failure', (message) => {
-    whatsappReady = false;
-    latestQr = null;
-    latestQrAt = 0;
-    console.error('WhatsApp authentication failed:', message);
-});
-
-client.on('disconnected', (reason) => {
-    whatsappReady = false;
-    latestQr = null;
-    latestQrAt = 0;
-    console.warn('WhatsApp disconnected:', reason);
-});
-
-client.on('message_create', async (message) => {
-    const targetChatId = message.fromMe ? message.to : message.from;
-    const text = message.body.trim();
-
-    // 1. Check if the user is currently in the middle of adding a report
-    if (chatStates[targetChatId]) {
-        await handleAddReportConversation(targetChatId, text);
-        return; // Don't process other commands while in setup flow
-    }
-
-    // 2. Handle generic commands
-    
-    // Command: !addreport
-    if (text === '!addreport') {
-        chatStates[targetChatId] = { state: 'AWAITING_URL', tempReport: {} };
-        await client.sendMessage(targetChatId, 'Let\'s add a new report!\n\nPlease reply with the **URL** for the report dashboard.');
-        return;
-    }
-
-    // Command: !listreports
-    if (text === '!listreports') {
-        const reports = db.getReportsForChat(targetChatId);
-        if (reports.length === 0) {
-            await client.sendMessage(targetChatId, 'There are no reports configured for this chat. Use `!addreport` to add one.');
-        } else {
-            let msg = '*Configured Reports:*\n\n';
-            reports.forEach(r => {
-                msg += `- *${r.name}*\n  URL: ${r.url}\n  Schedule: ${r.schedule}\n\n`;
-            });
-            await client.sendMessage(targetChatId, msg);
-        }
-        return;
-    }
-
-    // Command: !chatid (Utility for Looker Integration)
-    if (text === '!chatid') {
-        await client.sendMessage(targetChatId, `Your WhatsApp Chat ID is:\n\n*${targetChatId}*\n\nUse this ID when scheduling reports in Looker.`);
-        return;
-    }
-
-    // Command: !removereport [name]
-    if (text.startsWith('!removereport ')) {
-        const reportName = text.replace('!removereport ', '').trim();
-        const success = db.removeReportFromChat(targetChatId, reportName);
-        if (success) {
-            scheduler.cancelScheduledReport(targetChatId, reportName);
-            await client.sendMessage(targetChatId, `Successfully deleted report: *${reportName}*`);
-        } else {
-            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*.`);
-        }
-        return;
-    }
-
-    // Command: !auth [name] (Send magic link for authentication)
-    if (text.startsWith('!auth ')) {
-        const reportName = text.replace('!auth ', '').trim();
-        const reports = db.getReportsForChat(targetChatId);
-        const report = reports.find(r => r.name.toLowerCase() === reportName.toLowerCase());
-
-        if (!report) {
-            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*. Use \`!listreports\` to see available reports.`);
-            return;
-        }
-
-        // Generate the magic link
-        if (process.env.ENABLE_COOKIE_AUTH_PORTAL !== 'true') {
-            await client.sendMessage(targetChatId, 'Cookie-based authentication is disabled. Use the user-controlled login procedure described in the deployment guide.');
-            return;
-        }
-        const serverIp = (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
-        const magicLink = `${serverIp}/login?chatId=${encodeURIComponent(targetChatId)}&url=${encodeURIComponent(report.url)}`;
-        
-        await client.sendMessage(targetChatId, `🔐 *Authentication Required*\n\nPlease log in to authenticate the *${report.name}* dashboard.\n\nClick the secure link below to enter your credentials:\n${magicLink}`);
-        return;
-    }
-
-    // Command: !report [name] (On-Demand screenshot)
-    if (text.startsWith('!report ')) {
-        const reportName = text.replace('!report ', '').trim();
-        const reports = db.getReportsForChat(targetChatId);
-        const report = reports.find(r => r.name.toLowerCase() === reportName.toLowerCase());
-
-        if (!report) {
-            await client.sendMessage(targetChatId, `Could not find a report named *${reportName}*. Use \`!listreports\` to see available reports.`);
-            return;
-        }
-
-        try {
-            console.log(`Received on-demand request for ${report.name} in chat: ${targetChatId}`);
-            await client.sendMessage(targetChatId, `Loading report *${report.name}*... This may take a few seconds.`);
-            const { captureScreenshot } = require('./screenshot');
-            // Pass the targetChatId to captureScreenshot so it uses the correct isolated browser profile
-            const imageBuffer = await captureScreenshot(report.url, targetChatId);
-            const media = { mimetype: 'image/png', data: imageBuffer.toString('base64'), filename: `${report.name}.png` };
-            
-            await client.sendMessage(targetChatId, media, { caption: `Here is your requested report: *${report.name}*` });
-        } catch (error) {
-            console.error('Failed to send report:', error);
-            await client.sendMessage(targetChatId, `Sorry, I encountered an error while trying to fetch the report *${report.name}*.`);
-        }
-        return;
-    }
-});
-
-// Helper function to handle the conversational flow for adding a report
-async function handleAddReportConversation(chatId, text) {
-    // Prevent infinite loop when testing from the bot's own phone
-    const botPrompts = [
-        "Let's add a new report!\n\nPlease reply with the **URL** for the report dashboard.",
-        "That does not look like a valid URL. Please reply with a valid URL starting with http:// or https:// (or type `cancel` to quit).",
-        'Great! Now, please reply with a short **Name** for this report (e.g., "Daily Sales" or "Marketing Dashboard").',
-        "Got it. When should I send this report automatically?\n\nReply with a number:\n*1* = Daily at 9:00 AM\n*2* = Daily at 5:00 PM\n*3* = No schedule (On-Demand only)\n\n*(Type `cancel` to abort)*",
-        "Report setup cancelled."
-    ];
-    
-    if (botPrompts.includes(text)) {
-        return; // Ignore the bot's own automated messages
-    }
-
-    const currentState = chatStates[chatId].state;
-
-    // Provide a way out if they get stuck
-    if (text.toLowerCase() === 'cancel') {
-        delete chatStates[chatId];
-        await client.sendMessage(chatId, 'Report setup cancelled.');
-        return;
-    }
-
-    if (currentState === 'AWAITING_URL') {
-        if (!text.startsWith('http')) {
-            await client.sendMessage(chatId, 'That does not look like a valid URL. Please reply with a valid URL starting with http:// or https:// (or type `cancel` to quit).');
-            return;
-        }
-        chatStates[chatId].tempReport.url = text;
-        chatStates[chatId].state = 'AWAITING_NAME';
-        await client.sendMessage(chatId, 'Great! Now, please reply with a short **Name** for this report (e.g., "Daily Sales" or "Marketing Dashboard").');
-        
-    } else if (currentState === 'AWAITING_NAME') {
-        chatStates[chatId].tempReport.name = text;
-        chatStates[chatId].state = 'AWAITING_SCHEDULE';
-        
-        const scheduleMsg = `Got it. When should I send this report automatically?\n\nReply with a number:\n*1* = Daily at 9:00 AM\n*2* = Daily at 5:00 PM\n*3* = No schedule (On-Demand only)\n\n*(Type \`cancel\` to abort)*`;
-        await client.sendMessage(chatId, scheduleMsg);
-
-    } else if (currentState === 'AWAITING_SCHEDULE') {
-        if (!['1', '2', '3'].includes(text)) {
-            await client.sendMessage(chatId, 'Invalid choice. Please reply with 1, 2, or 3.');
-            return;
-        }
-
-        const tempReport = chatStates[chatId].tempReport;
-        
-        // Save to database
-        const savedReport = db.addReportToChat(chatId, tempReport.name, tempReport.url, text);
-        
-        // Add to dynamic scheduler
-        scheduler.scheduleReport(client, chatId, savedReport);
-
-        // Clear conversational state
-        delete chatStates[chatId];
-
-        await client.sendMessage(chatId, `🎉 Success! The report *${savedReport.name}* has been configured and scheduled.\n\nYou can use \`!report ${savedReport.name}\` to request it manually anytime.`);
-    }
+function studioConfigurationPresent() {
+    return Boolean(process.env.STUDIO_ROUTING_EMAIL && process.env.STUDIO_ROUTE_PEPPER && process.env.STUDIO_INGEST_TOKEN);
 }
 
-// Start the client
-console.log('Starting WhatsApp client...');
-client.initialize().catch(error => {
-    console.error('WhatsApp client failed to initialize:', error);
-    // Do not leave an HTTP-only process reporting "not_ready" forever.
-    // Render will restart it and generate a fresh QR for the next attempt.
-    setTimeout(() => process.exit(1), 1000);
-});
+async function canManageRoutes({ chatId, senderId, message }) {
+    if (message.fromMe) return true;
+    const explicitAdmins = parseCsvSet(process.env.STUDIO_ROUTE_ADMIN_IDS);
+    if (explicitAdmins.has(senderId)) return true;
+    if (chatId.endsWith('@g.us')) return client.isGroupAdmin(chatId, senderId).catch(() => false);
+    return process.env.NODE_ENV !== 'production' && process.env.STUDIO_ALLOW_TEST_SETUP === 'true';
+}
+
+async function main() {
+    let routeService = null;
+    let studioEmailService = null;
+    if (studioConfigurationPresent()) {
+        studioStore = await new MongoStudioStore({
+            uri: process.env.MONGODB_URI,
+            dbName: process.env.MONGODB_DB_NAME || 'whatsapp_bot'
+        }).connect();
+        routeService = new StudioRouteService({
+            store: studioStore,
+            routingEmail: process.env.STUDIO_ROUTING_EMAIL,
+            pepper: process.env.STUDIO_ROUTE_PEPPER
+        });
+        studioEmailService = new StudioEmailService({
+            routeService,
+            store: studioStore,
+            client,
+            isClientReady: () => whatsappReady,
+            convertPdf: convertPdfToPngPages,
+            allowedSenders: parseCsvSet(process.env.STUDIO_ALLOWED_SENDERS)
+        });
+        console.log('Looker Studio email routing is enabled.');
+    } else {
+        console.warn('Looker Studio email routing is disabled because its environment variables are incomplete.');
+    }
+
+    server = startServer(client, {
+        isClientReady: () => whatsappReady,
+        getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null,
+        studioEmailService
+    });
+
+    client.on('qr', qr => {
+        latestQr = qr;
+        latestQrAt = Date.now();
+        console.log('Please scan the QR code below to link the bot:');
+        qrcode.generate(qr, { small: true });
+    });
+    client.on('authenticated', () => {
+        latestQr = null;
+        latestQrAt = 0;
+        console.log('WhatsApp authentication completed; waiting for the client to become ready...');
+    });
+    client.on('change_state', state => console.log(`WhatsApp connection state: ${state}`));
+    client.on('ready', () => {
+        whatsappReady = true;
+        latestQr = null;
+        latestQrAt = 0;
+        console.log('WhatsApp Bot is ready and connected!');
+    });
+    client.on('remote_session_saved', () => console.log('WhatsApp session backup saved to MongoDB.'));
+    client.on('auth_failure', message => {
+        whatsappReady = false;
+        latestQr = null;
+        latestQrAt = 0;
+        console.error('WhatsApp authentication failed:', message);
+    });
+    client.on('disconnected', reason => {
+        whatsappReady = false;
+        console.warn('WhatsApp disconnected:', reason);
+    });
+    client.on('message_create', async message => {
+        try {
+            if (await handleStudioCommand({ message, client, routeService, canManage: canManageRoutes })) return;
+            const chatId = message.fromMe ? message.to : message.from;
+            if (String(message.body || '').trim() === '!chatid') {
+                await client.sendMessage(chatId, `Your WhatsApp Chat ID is:\n\n*${chatId}*`);
+            }
+        } catch (error) {
+            console.error('WhatsApp command failed:', error.message || error);
+        }
+    });
+
+    console.log('Starting WhatsApp client...');
+    await client.initialize();
+}
 
 async function shutdown(signal) {
     console.log(`Received ${signal}; shutting down.`);
     whatsappReady = false;
+    if (server) await new Promise(resolve => server.close(resolve));
     await client.destroy().catch(() => {});
+    if (studioStore) await studioStore.close().catch(() => {});
     process.exit(0);
 }
 
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
+
+main().catch(error => {
+    console.error('Bot failed to start:', error);
+    setTimeout(() => process.exit(1), 1000);
+});

@@ -88,3 +88,47 @@ test('execute rejects an unapproved destination', async () => {
     });
     assert.equal(response.status, 403);
 });
+
+test('Studio email ingestion requires its bearer token and invokes the service', async () => {
+    const received = [];
+    const base = await serve({
+        client: {},
+        studioIngestToken: 'studio-secret',
+        studioEmailService: { process: async payload => { received.push(payload); return { deliveredPages: 1 }; } }
+    });
+    const denied = await fetch(`${base}/studio/email/ingest`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    assert.equal(denied.status, 401);
+    const accepted = await fetch(`${base}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId: 'gmail:test123' })
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json()).deliveredPages, 1);
+    assert.equal(received.length, 1);
+});
+
+test('Studio ingestion reports configuration and service failures with safe status codes', async () => {
+    const missing = await serve({ client: {}, studioIngestToken: 'studio-secret' });
+    const unavailable = await fetch(`${missing}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: '{}'
+    });
+    assert.equal(unavailable.status, 503);
+
+    const failing = await serve({
+        client: {},
+        studioIngestToken: 'studio-secret',
+        studioEmailService: { process: async () => { const error = new Error('Unknown report route.'); error.statusCode = 404; throw error; } }
+    });
+    const rejected = await fetch(`${failing}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: '{}'
+    });
+    assert.equal(rejected.status, 404);
+    assert.deepEqual(await rejected.json(), { success: false, error: 'Unknown report route.' });
+});

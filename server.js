@@ -72,15 +72,16 @@ function createApp({
     lookerToken = process.env.LOOKER_ACTION_TOKEN,
     allowedChatIds = parseCsvSet(process.env.LOOKER_ALLOWED_CHAT_IDS),
     publicBaseUrl = process.env.PUBLIC_BASE_URL,
-    enableCookieAuthPortal = process.env.ENABLE_COOKIE_AUTH_PORTAL === 'true',
-    maxImageBytes = Number(process.env.LOOKER_MAX_IMAGE_BYTES) || DEFAULT_MAX_IMAGE_BYTES
+    maxImageBytes = Number(process.env.LOOKER_MAX_IMAGE_BYTES) || DEFAULT_MAX_IMAGE_BYTES,
+    studioEmailService = null,
+    studioIngestToken = process.env.STUDIO_INGEST_TOKEN
 } = {}) {
     if (!client) throw new Error('A WhatsApp client is required.');
     const app = express();
     app.disable('x-powered-by');
     app.set('trust proxy', 1);
     app.use(express.urlencoded({ extended: false, limit: '256kb' }));
-    app.use(express.json({ limit: '12mb' }));
+    app.use(express.json({ limit: '25mb' }));
     app.use(express.static(path.join(__dirname, 'public')));
 
     const baseUrl = publicBaseUrl && publicBaseUrl.replace(/\/$/, '');
@@ -93,6 +94,13 @@ function createApp({
         return secretsMatch(supplied, lookerToken) ? next() : res.status(401).json({ error: 'Unauthorized.' });
     };
     const listActions = (req, res) => res.json(buildActionList(baseUrl || `${req.protocol}://${req.get('host')}`));
+    const requireStudioToken = (req, res, next) => {
+        if (!studioIngestToken) return res.status(503).json({ error: 'STUDIO_INGEST_TOKEN is not configured.' });
+        const match = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
+        return match && secretsMatch(match[1], studioIngestToken)
+            ? next()
+            : res.status(401).json({ error: 'Unauthorized.' });
+    };
 
     app.get('/healthz', (req, res) => res.json({ status: 'ok', whatsappReady: Boolean(isClientReady()) }));
     app.get('/readyz', (req, res) => {
@@ -119,22 +127,14 @@ function createApp({
         return res.type('image/svg+xml').send(qrToSvg(qr));
     });
 
-    app.get('/login', (req, res) => {
-        if (!enableCookieAuthPortal) return res.status(404).send('Not found.');
-        return res.sendFile(path.join(__dirname, 'public', 'login.html'));
-    });
-    app.post('/auth', async (req, res) => {
-        if (!enableCookieAuthPortal) return res.status(404).send('Not found.');
-        const { chatId, url, cookies } = req.body;
-        if (!isValidWhatsAppChatId(chatId) || !url || !cookies) return res.status(400).send('Invalid or missing fields.');
-        res.send('<h2>Session import is in progress.</h2><p>You may close this window.</p>');
+    app.post('/studio/email/ingest', requireStudioToken, async (req, res) => {
+        if (!studioEmailService) return res.status(503).json({ error: 'Looker Studio email ingestion is not configured.' });
         try {
-            const { authenticateSession } = require('./screenshot');
-            await authenticateSession(url, chatId, cookies);
-            await client.sendMessage(chatId, `Successfully authenticated for: ${url}`);
+            const result = await studioEmailService.process(req.body || {});
+            return res.json({ success: true, ...result });
         } catch (error) {
-            console.error('Authentication failed:', error.message);
-            await client.sendMessage(chatId, 'Authentication failed. Contact the bot operator.').catch(() => {});
+            console.error('Looker Studio email ingestion failed:', error.message || error);
+            return res.status(error.statusCode || 500).json({ success: false, error: error.message || 'Delivery failed.' });
         }
     });
 

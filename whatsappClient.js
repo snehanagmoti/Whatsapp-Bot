@@ -124,10 +124,18 @@ class WhatsAppClient extends EventEmitter {
                     body,
                     fromMe: Boolean(message.key.fromMe),
                     from: chatId,
-                    to: chatId
+                    to: chatId,
+                    senderId: message.key?.participant || message.key?.remoteJid
                 });
             }
         });
+    }
+
+    async isGroupAdmin(chatId, senderId) {
+        if (!this.ready || !this.socket || !chatId.endsWith('@g.us') || !senderId) return false;
+        const metadata = await this.socket.groupMetadata(chatId);
+        const participant = (metadata.participants || []).find(item => item.id === senderId || item.phoneNumber === senderId);
+        return Boolean(participant && (participant.admin === 'admin' || participant.admin === 'superadmin'));
     }
 
     async sendMessage(chatId, content, options = {}) {

@@ -1,43 +1,49 @@
-# WhatsApp Screenshot & Reporting Bot
+# Looker Studio to WhatsApp Report Bot
 
-An automated, multi-tenant WhatsApp bot built with Node.js, `whatsapp-web.js`, and Puppeteer. It allows teams to dynamically schedule and request on-demand screenshots of authenticated BI dashboards (Looker, Metabase) and private web portals directly through WhatsApp chats.
+This Node.js service routes scheduled Looker Studio PDF reports to approved WhatsApp chats. A chat administrator creates a unique delivery address with `!setupreport`; Looker Studio emails its scheduled PDF to that address; the service validates and converts the PDF to PNG pages and sends them to the mapped chat.
 
-## Features
-* **Conversational Interface**: Setup your reports interactively by chatting with the bot (`!addreport`). No need to edit `.env` files or write Cron expressions.
-* **Multi-Profile Isolation**: Built with tenant security in mind. Every WhatsApp chat (group or personal DM) gets its own isolated Chrome browser profile. Team A cannot see Team B's private dashboards, and cookies are never mixed.
-* **Dynamic Background Scheduler**: Built-in background scheduling allows users to set daily delivery times (e.g. 9:00 AM) that are triggered automatically.
-* **Looker Action Hub**: Looker can push rendered PNG dashboards to an authenticated webhook, which forwards them only to approved WhatsApp destinations.
-* **Restart-safe WhatsApp login**: When `MONGODB_URI` is configured, the linked-device session is backed up to MongoDB GridFS and restored after ephemeral-host restarts.
+The implementation does not log into Looker Studio, collect cookies, open report URLs, or schedule browser screenshots.
 
-## Documentation
-For full details on how this project works and how to use it, please see the included markdown guides:
+## Main components
 
-1. **[Implementation Plan](./IMPLEMENTATION_PLAN.md)** - Details the architectural decisions, the Tech Stack, the Conversational State Machine, and how the Multi-Profile (Tenant Isolation) system was built.
-2. **[Usage Guide](./USAGE_GUIDE.md)** - A step-by-step guide for both end-users (how to use chat commands) and bot administrators (how to authenticate a specific team's chat profile via the server).
-3. **[Risks and Limitations](./RISKS_AND_LIMITATIONS.md)** - Details the risks of WhatsApp account bans, the limitations of Puppeteer with 2FA/CAPTCHAs, and solutions for dealing with slow-loading BI tools.
+- `index.js`: application startup, WhatsApp events, and authorization for chat commands.
+- `studioRouting.js`: secure, revocable plus-address generation and lookup.
+- `studioStore.js`: MongoDB route and delivery-deduplication records.
+- `studioEmailService.js`: inbound email validation, routing, and WhatsApp delivery.
+- `pdfProcessor.js`: PDF-to-PNG conversion through Poppler.
+- `server.js`: protected email-ingestion endpoint, health checks, QR setup, and retained full-Looker Action Hub endpoints.
+- `integrations/google-apps-script/Code.gs`: free Gmail-to-bot bridge for testing.
+- `scratch/test_studio_email_delivery.js`: simulated Looker Studio delivery for testing without Pro.
 
-## Quick Start
-1. Clone the repository.
-2. Run `npm install` to install the dependencies.
-3. Run `node index.js`.
-4. Scan the QR code with your WhatsApp app (Linked Devices).
-5. Send `!addreport` to the bot in WhatsApp to configure your first dashboard!
+## Environment variables
 
-## Looker / Render Deployment
+Required for WhatsApp and Studio routing:
 
-1. Copy `.env.example` values into Render environment variables. Set `PUBLIC_BASE_URL` to the final HTTPS service URL.
-2. Keep the generated `LOOKER_ACTION_TOKEN` secret and enter the same value as the Action Hub authentication token in Looker.
-3. Add only approved IDs to `LOOKER_ALLOWED_CHAT_IDS` (comma-separated). Obtain each ID with `!chatid`.
-4. Create a free MongoDB Atlas cluster and set its connection string as `MONGODB_URI`. The custom GridFS store backs up the WhatsApp linked-device session every minute so it can be restored after Render restarts.
-5. Deploy with `render.yaml`, which uses the Render Free plan. Local files remain temporary; the WhatsApp session is the part persisted in MongoDB.
-6. In Looker Admin -> Platform -> Actions, add `https://your-service.onrender.com/actions` as the Action Hub URL and supply the authentication token.
-7. Watch the first deploy logs and scan the WhatsApp QR code. Wait for the `WhatsApp session backup saved to MongoDB` log before restarting.
+```text
+MONGODB_URI=
+MONGODB_DB_NAME=whatsapp_bot
+PUBLIC_BASE_URL=https://your-service.example.com
+STUDIO_ROUTING_EMAIL=looker-reports@your-domain.com
+STUDIO_ROUTE_PEPPER=<random secret of at least 24 characters>
+STUDIO_INGEST_TOKEN=<random bearer token>
+```
 
-`/healthz` confirms the web service is running. `/readyz` returns HTTP 200 only after WhatsApp is connected. The optional cookie-import portal is disabled by default because pasted session cookies are credentials; enabling it is not recommended for production.
+Recommended:
 
-### Important Limitations
+```text
+STUDIO_ALLOWED_SENDERS=<comma-separated exact sender addresses after observing a genuine delivery>
+STUDIO_ROUTE_ADMIN_IDS=<comma-separated WhatsApp user IDs allowed to manage routes>
+STUDIO_MAX_PDF_BYTES=15728640
+STUDIO_MAX_PAGES=5
+```
 
-- `whatsapp-web.js` is an unofficial client and can break when WhatsApp Web changes or can trigger account restrictions. Use a dedicated bot number.
-- Render Free spins down after inactivity and can take about a minute to wake. MongoDB restores the WhatsApp login, but scheduled Looker deliveries can still fail during the cold-start window. This zero-cost setup is suitable only for a prototype.
-- The bot's local `database.json` schedules and private-dashboard browser profiles are not persisted on Render Free. Use Looker's own scheduling (Option A); the Puppeteer scheduling fallback is local-machine-only in the free deployment.
-- Private dashboards still require a user-controlled authentication design. The local `login.js` flow is acceptable for a prototype on a trusted machine, but it is not a secure remote multi-user login service.
+The existing `LOOKER_ACTION_TOKEN` and `LOOKER_ALLOWED_CHAT_IDS` variables apply only to the retained full-Looker Action Hub path.
+
+## Verification
+
+```bash
+npm test
+npm run check
+```
+
+See [USAGE_GUIDE.md](./USAGE_GUIDE.md) for the no-Pro test procedure and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md) before production use.

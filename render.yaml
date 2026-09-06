@@ -4,8 +4,6 @@ services:
     runtime: docker
     plan: free
     envVars:
-      - key: DATA_DIR
-        value: /tmp/whatsapp-bot
       - key: NODE_OPTIONS
         value: --max-old-space-size=128
       - key: MALLOC_ARENA_MAX
@@ -20,5 +18,17 @@ services:
         generateValue: true
       - key: LOOKER_ALLOWED_CHAT_IDS
         sync: false
-      - key: ENABLE_COOKIE_AUTH_PORTAL
-        value: "false"
+      - key: STUDIO_ROUTING_EMAIL
+        sync: false
+      - key: STUDIO_ROUTE_PEPPER
+        generateValue: true
+      - key: STUDIO_INGEST_TOKEN
+        generateValue: true
+      - key: STUDIO_ALLOWED_SENDERS
+        sync: false
+      - key: STUDIO_ROUTE_ADMIN_IDS
+        sync: false
+      - key: STUDIO_MAX_PDF_BYTES
+        value: "15728640"
+      - key: STUDIO_MAX_PAGES
+        value: "5"
