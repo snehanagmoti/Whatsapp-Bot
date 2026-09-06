@@ -24,6 +24,8 @@ services:
         generateValue: true
       - key: STUDIO_INGEST_TOKEN
         generateValue: true
+      - key: STUDIO_INGEST_TOKEN_OVERRIDE
+        sync: false
       - key: STUDIO_ALLOWED_SENDERS
         sync: false
       - key: STUDIO_ROUTE_ADMIN_IDS

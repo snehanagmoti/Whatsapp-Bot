@@ -79,7 +79,7 @@ function createApp({
     publicBaseUrl = process.env.PUBLIC_BASE_URL,
     maxImageBytes = Number(process.env.LOOKER_MAX_IMAGE_BYTES) || DEFAULT_MAX_IMAGE_BYTES,
     studioEmailService = null,
-    studioIngestToken = process.env.STUDIO_INGEST_TOKEN
+    studioIngestToken = process.env.STUDIO_INGEST_TOKEN_OVERRIDE || process.env.STUDIO_INGEST_TOKEN
 } = {}) {
     if (!client) throw new Error('A WhatsApp client is required.');
     const app = express();

@@ -22,7 +22,11 @@ const client = new WhatsAppClient({
 });
 
 function studioConfigurationPresent() {
-    return Boolean(process.env.STUDIO_ROUTING_EMAIL && process.env.STUDIO_ROUTE_PEPPER && process.env.STUDIO_INGEST_TOKEN);
+    return Boolean(
+        process.env.STUDIO_ROUTING_EMAIL
+        && process.env.STUDIO_ROUTE_PEPPER
+        && (process.env.STUDIO_INGEST_TOKEN_OVERRIDE || process.env.STUDIO_INGEST_TOKEN)
+    );
 }
 
 async function canManageRoutes({ chatId, senderId, message }) {
