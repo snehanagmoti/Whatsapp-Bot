@@ -22,6 +22,13 @@ function messageText(message) {
         || '';
 }
 
+function shouldProcessMessageUpsert(type) {
+    // `notify` is a live message. `append` is used for messages queued while
+    // this free-tier service was asleep, and for own events emitted by Baileys.
+    // Other types can represent history replacement and must not run commands.
+    return type === 'notify' || type === 'append';
+}
+
 class WhatsAppClient extends EventEmitter {
     constructor({ mongoUri, dbName = 'whatsapp_bot', sessionId = 'bot' } = {}) {
         super();
@@ -119,7 +126,7 @@ class WhatsAppClient extends EventEmitter {
         });
 
         socket.ev.on('messages.upsert', event => {
-            if (event.type !== 'notify') return;
+            if (!shouldProcessMessageUpsert(event.type)) return;
             for (const message of event.messages || []) {
                 const chatId = message.key?.remoteJid;
                 const body = messageText(message.message);
@@ -169,4 +176,4 @@ class WhatsAppClient extends EventEmitter {
     }
 }
 
-module.exports = { WhatsAppClient, messageText };
+module.exports = { WhatsAppClient, messageText, shouldProcessMessageUpsert };
