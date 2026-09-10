@@ -1,5 +1,11 @@
 const http = require('http');
 
+const chatId = process.env.LOOKER_TEST_CHAT_ID;
+const actionToken = process.env.LOOKER_ACTION_TOKEN;
+if (!chatId || !actionToken) {
+  throw new Error('Set LOOKER_TEST_CHAT_ID and LOOKER_ACTION_TOKEN before running this script.');
+}
+
 const payload = JSON.stringify({
   type: "dashboard",
   scheduled_plan: {
@@ -12,7 +18,7 @@ const payload = JSON.stringify({
     data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
   },
   form_params: {
-    chatId: "120363418128283609@g.us",
+    chatId,
     customMessage: "✅ Automated Webhook Test: Successfully received Looker payload!"
   }
 });
@@ -24,7 +30,8 @@ const options = {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(payload)
+    'Content-Length': Buffer.byteLength(payload),
+    Authorization: `Token token="${actionToken}"`
   }
 };
 

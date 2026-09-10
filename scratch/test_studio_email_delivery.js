@@ -23,17 +23,18 @@ function createTestPdf() {
 
 async function main() {
     const baseUrl = String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
-    const token = process.env.STUDIO_INGEST_TOKEN;
+    const token = process.env.STUDIO_INGEST_TOKEN_OVERRIDE || process.env.STUDIO_INGEST_TOKEN;
     const routingEmail = process.env.STUDIO_TEST_ROUTING_EMAIL;
-    if (!baseUrl || !token || !routingEmail) {
-        throw new Error('Set PUBLIC_BASE_URL, STUDIO_INGEST_TOKEN and STUDIO_TEST_ROUTING_EMAIL.');
+    const sender = process.env.STUDIO_TEST_SENDER;
+    if (!baseUrl || !token || !routingEmail || !sender) {
+        throw new Error('Set PUBLIC_BASE_URL, STUDIO_INGEST_TOKEN, STUDIO_TEST_ROUTING_EMAIL and an approved STUDIO_TEST_SENDER.');
     }
     const response = await fetch(`${baseUrl}/studio/email/ingest`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             messageId: `simulated:${Date.now()}`,
-            from: process.env.STUDIO_TEST_SENDER || 'test-sender@example.com',
+            from: sender,
             to: routingEmail,
             subject: 'TEST: Simulated Looker Studio scheduled delivery',
             attachments: [{

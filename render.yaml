@@ -3,6 +3,7 @@ services:
     name: whatsapp-screenshot-bot
     runtime: docker
     plan: free
+    healthCheckPath: /healthz
     envVars:
       - key: NODE_OPTIONS
         value: --max-old-space-size=128
@@ -12,9 +13,17 @@ services:
         sync: false
       - key: MONGODB_DB_NAME
         value: whatsapp_bot
+      - key: WA_AUTH_ENCRYPTION_KEY
+        generateValue: true
+      - key: WA_COMMAND_CLAIM_TTL_MS
+        value: "604800000"
+      - key: WA_COMMAND_MAX_AGE_MS
+        value: "86400000"
       - key: PUBLIC_BASE_URL
         sync: false
       - key: LOOKER_ACTION_TOKEN
+        generateValue: true
+      - key: QR_SETUP_TOKEN
         generateValue: true
       - key: LOOKER_ALLOWED_CHAT_IDS
         sync: false
@@ -27,10 +36,30 @@ services:
       - key: STUDIO_INGEST_TOKEN_OVERRIDE
         sync: false
       - key: STUDIO_ALLOWED_SENDERS
-        sync: false
+        value: data-studio-noreply@google.com
       - key: STUDIO_ROUTE_ADMIN_IDS
         sync: false
+      - key: STUDIO_MAX_ROUTES_PER_CHAT
+        value: "20"
       - key: STUDIO_MAX_PDF_BYTES
         value: "15728640"
       - key: STUDIO_MAX_PAGES
         value: "5"
+      - key: STUDIO_PDF_DPI
+        value: "144"
+      - key: STUDIO_MAX_IMAGE_BYTES
+        value: "7340032"
+      - key: STUDIO_MAX_PAGE_POINTS
+        value: "10000"
+      - key: STUDIO_MAX_PAGE_PIXELS
+        value: "2400"
+      - key: STUDIO_MAX_TOTAL_PIXELS
+        value: "20000000"
+      - key: STUDIO_MAX_REQUEST_BYTES
+        value: "23068672"
+      - key: STUDIO_MAX_CONCURRENT_INGESTS
+        value: "2"
+      - key: STUDIO_RATE_LIMIT_PER_MINUTE
+        value: "30"
+      - key: STUDIO_DELIVERY_LEASE_MS
+        value: "600000"

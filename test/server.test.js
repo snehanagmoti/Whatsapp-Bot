@@ -89,6 +89,25 @@ test('execute rejects an unapproved destination', async () => {
     assert.equal(response.status, 403);
 });
 
+test('execute returns a retryable upstream status when WhatsApp sending fails', async () => {
+    const chatId = '120363000000000000@g.us';
+    const base = await serve({
+        client: { sendMessage: async () => { throw new Error('temporary send failure'); } },
+        isClientReady: () => true,
+        lookerToken: 'secret',
+        allowedChatIds: new Set([chatId])
+    });
+    const response = await fetch(`${base}/looker/execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Token token="secret"', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            attachment: { mimetype: 'image/png', data: png },
+            form_params: { chatId }
+        })
+    });
+    assert.equal(response.status, 502);
+});
+
 test('Studio email ingestion requires its bearer token and invokes the service', async () => {
     const received = [];
     const base = await serve({
@@ -131,4 +150,138 @@ test('Studio ingestion reports configuration and service failures with safe stat
     });
     assert.equal(rejected.status, 404);
     assert.deepEqual(await rejected.json(), { success: false, error: 'Unknown report route.' });
+});
+
+test('health endpoints expose a safe application version without leaking environment values', async () => {
+    const base = await serve({ client: {}, isClientReady: () => true });
+    const response = await fetch(`${base}/versionz`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.match(body.version, /^\d+\.\d+\.\d+$/);
+    assert.equal(body.commit, null);
+
+    const ready = await (await fetch(`${base}/readyz`)).json();
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.version, body.version);
+});
+
+test('QR setup uses a credential separate from the Looker Action token', async () => {
+    const base = await serve({
+        client: {},
+        isClientReady: () => false,
+        getLatestQr: () => 'test-whatsapp-qr-value',
+        lookerToken: 'action-secret',
+        qrSetupToken: 'qr-secret'
+    });
+    const wrongPurpose = await fetch(`${base}/setup/qr.svg`, {
+        headers: { Authorization: 'Bearer action-secret' }
+    });
+    assert.equal(wrongPurpose.status, 401);
+    const accepted = await fetch(`${base}/setup/qr.svg`, {
+        headers: { Authorization: 'Bearer qr-secret' }
+    });
+    assert.equal(accepted.status, 200);
+    assert.match(accepted.headers.get('content-type'), /image\/svg\+xml/);
+});
+
+test('Studio ingestion is rate limited after authentication', async () => {
+    const base = await serve({
+        client: {},
+        studioIngestToken: 'studio-secret',
+        studioRateLimit: 1,
+        studioEmailService: { process: async () => ({ deliveredPages: 0 }) }
+    });
+    const request = () => fetch(`${base}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: '{}'
+    });
+    assert.equal((await request()).status, 200);
+    const limited = await request();
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get('retry-after'), '60');
+});
+
+test('Studio ingestion rejects excess concurrent conversion work with a retryable status', async () => {
+    let releaseFirst;
+    let markStarted;
+    const started = new Promise(resolve => { markStarted = resolve; });
+    const hold = new Promise(resolve => { releaseFirst = resolve; });
+    let calls = 0;
+    const base = await serve({
+        client: {},
+        studioIngestToken: 'studio-secret',
+        studioMaxConcurrent: 1,
+        studioEmailService: {
+            process: async () => {
+                calls += 1;
+                if (calls === 1) {
+                    markStarted();
+                    await hold;
+                }
+                return { deliveredPages: 0 };
+            }
+        }
+    });
+    const request = () => fetch(`${base}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: '{}'
+    });
+    const first = request();
+    await started;
+    const busy = await request();
+    assert.equal(busy.status, 503);
+    assert.equal(busy.headers.get('retry-after'), '10');
+    releaseFirst();
+    assert.equal((await first).status, 200);
+    assert.equal(calls, 1);
+});
+
+test('Studio ingestion returns JSON for malformed and oversized request bodies', async () => {
+    const base = await serve({
+        client: {},
+        studioIngestToken: 'studio-secret',
+        studioRequestBytes: 32,
+        studioEmailService: { process: async () => assert.fail('invalid bodies must not reach the service') }
+    });
+    const malformed = await fetch(`${base}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: '{not json'
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), { error: 'Invalid JSON body.' });
+
+    const oversized = await fetch(`${base}/studio/email/ingest`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: 'x'.repeat(100) })
+    });
+    assert.equal(oversized.status, 413);
+    assert.deepEqual(await oversized.json(), { error: 'Request body exceeds the allowed size.' });
+});
+
+test('a disconnected ingest caller cannot free a slot while processing continues', async () => {
+    let releaseWork;
+    let signalStarted;
+    const started = new Promise(resolve => { signalStarted = resolve; });
+    const pending = new Promise(resolve => { releaseWork = resolve; });
+    const base = await serve({
+        client: {}, studioIngestToken: 'studio-secret', studioMaxConcurrent: 1,
+        studioEmailService: { process: async () => { signalStarted(); await pending; return {}; } }
+    });
+    const headers = { Authorization: 'Bearer studio-secret', 'Content-Type': 'application/json' };
+    const controller = new AbortController();
+    const first = fetch(`${base}/studio/email/ingest`, {
+        method: 'POST', headers, body: '{}', signal: controller.signal
+    }).catch(error => error);
+    await started;
+    controller.abort();
+    await first;
+    // Give the server the socket-close event before checking the active slot.
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const second = await fetch(`${base}/studio/email/ingest`, { method: 'POST', headers, body: '{}' });
+    releaseWork();
+    assert.equal(second.status, 503);
 });

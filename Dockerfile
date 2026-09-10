@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim
 
 # Keep the Node/native allocators within Render Free's 512 MB memory budget.
+ENV NODE_ENV=production
 ENV NODE_OPTIONS=--max-old-space-size=128
 ENV MALLOC_ARENA_MAX=2
 

@@ -36,3 +36,53 @@ test('unauthorized users cannot create report routes', async () => {
     assert.equal(handled, true);
     assert.match(replies[0][1], /authorized user or group administrator/i);
 });
+
+test('requires an explicit confirmation before permanently removing a route', async () => {
+    const store = new MemoryStudioStore();
+    const routeService = new StudioRouteService({
+        store,
+        routingEmail: 'reports@example.com',
+        pepper: 'a-long-test-only-route-pepper-value'
+    });
+    await routeService.createRoute({ chatId: '123@g.us', name: 'Daily Sales', createdBy: 'admin' });
+    const replies = [];
+    const options = {
+        client: { sendMessage: async (...args) => replies.push(args) },
+        routeService,
+        canManage: async () => true
+    };
+
+    await handleStudioCommand({
+        ...options,
+        message: { from: '123@g.us', senderId: 'admin', body: '!removereport Daily Sales' }
+    });
+    assert.equal((await routeService.listRoutes('123@g.us')).length, 1);
+    assert.match(replies[0][1], /!removereport Daily Sales --confirm/);
+
+    await handleStudioCommand({
+        ...options,
+        message: { from: '123@g.us', senderId: 'admin', body: '!removereport Daily Sales --confirm' }
+    });
+    assert.equal((await routeService.listRoutes('123@g.us')).length, 0);
+    assert.match(replies[1][1], /removed/);
+});
+
+test('explains the per-chat route quota when setup would exceed it', async () => {
+    const store = new MemoryStudioStore();
+    const routeService = new StudioRouteService({
+        store,
+        routingEmail: 'reports@example.com',
+        pepper: 'a-long-test-only-route-pepper-value',
+        maxRoutesPerChat: 1
+    });
+    await routeService.createRoute({ chatId: '123@g.us', name: 'First', createdBy: 'admin' });
+    const replies = [];
+    await handleStudioCommand({
+        message: { from: '123@g.us', senderId: 'admin', body: '!setupreport Second' },
+        client: { sendMessage: async (...args) => replies.push(args) },
+        routeService,
+        canManage: async () => true
+    });
+    assert.match(replies[0][1], /maximum of 1 report routes/i);
+    assert.match(replies[0][1], /remove an unused route/i);
+});

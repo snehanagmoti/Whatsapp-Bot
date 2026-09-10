@@ -9,6 +9,8 @@ const { MongoStudioStore } = require('./studioStore');
 const { parseCsvSet } = require('./validation');
 const { WhatsAppClient } = require('./whatsappClient');
 
+const DEFAULT_STUDIO_ALLOWED_SENDERS = 'data-studio-noreply@google.com';
+
 let whatsappReady = false;
 let latestQr = null;
 let latestQrAt = 0;
@@ -50,15 +52,19 @@ async function main() {
             routingEmail: process.env.STUDIO_ROUTING_EMAIL,
             pepper: process.env.STUDIO_ROUTE_PEPPER
         });
+        const configuredSenders = parseCsvSet(process.env.STUDIO_ALLOWED_SENDERS);
+        const allowedSenders = configuredSenders.size
+            ? configuredSenders
+            : parseCsvSet(DEFAULT_STUDIO_ALLOWED_SENDERS);
         studioEmailService = new StudioEmailService({
             routeService,
             store: studioStore,
             client,
             isClientReady: () => whatsappReady,
             convertPdf: convertPdfToPngPages,
-            allowedSenders: parseCsvSet(process.env.STUDIO_ALLOWED_SENDERS)
+            allowedSenders
         });
-        console.log('Looker Studio email routing is enabled.');
+        console.log(`Looker Studio email routing is enabled with ${allowedSenders.size} approved sender(s).`);
     } else {
         console.warn('Looker Studio email routing is disabled because its environment variables are incomplete.');
     }
@@ -68,6 +74,9 @@ async function main() {
         getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null,
         studioEmailService
     });
+    if (process.env.NODE_ENV === 'production' && !process.env.QR_SETUP_TOKEN) {
+        console.warn('QR setup is disabled until QR_SETUP_TOKEN is configured.');
+    }
 
     client.on('qr', qr => {
         latestQr = qr;

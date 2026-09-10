@@ -6,3 +6,6 @@ user_data/
 user_data_profiles/
 database.json
 *.log
+*-qr.png
+*qr-code*.png
+tmp/

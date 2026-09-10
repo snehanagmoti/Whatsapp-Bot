@@ -76,18 +76,33 @@ async function handleStudioCommand({ message, client, routeService, canManage = 
         const removeName = commandArgument(text, '!removereport');
         if (removeName !== null) {
             if (!removeName) {
-                await client.sendMessage(chatId, 'Usage: !removereport <report name>');
+                await client.sendMessage(chatId, 'Usage: !removereport <report name> --confirm');
                 return true;
             }
-            const removed = await routeService.removeRoute(chatId, removeName);
-            await client.sendMessage(chatId, removed ? `Report route *${removeName}* removed.` : 'Report route not found.');
+            const confirmation = /^(.*?)\s+--confirm$/i.exec(removeName);
+            if (!confirmation || !confirmation[1].trim()) {
+                await client.sendMessage(
+                    chatId,
+                    `This permanently removes the route for *${removeName}*. To continue, send:\n\n` +
+                    `!removereport ${removeName} --confirm`
+                );
+                return true;
+            }
+            const confirmedName = confirmation[1].trim();
+            const removed = await routeService.removeRoute(chatId, confirmedName);
+            await client.sendMessage(chatId, removed ? `Report route *${confirmedName}* removed.` : 'Report route not found.');
             return true;
         }
     } catch (error) {
         const duplicate = error && error.code === 11000;
-        await client.sendMessage(chatId, duplicate
-            ? 'A report route with that name already exists. Use !rotatereport to replace its address.'
-            : `Could not update the report route: ${error.message || error}`);
+        const quotaExceeded = error && error.code === 'ROUTE_QUOTA_EXCEEDED';
+        await client.sendMessage(chatId,
+            duplicate
+                ? 'A report route with that name already exists. Use !rotatereport to replace its address.'
+                : quotaExceeded
+                    ? `${error.message} Remove an unused route before creating another.`
+                    : `Could not update the report route: ${error.message || error}`
+        );
         return true;
     }
     return false;
