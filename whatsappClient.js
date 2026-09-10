@@ -64,7 +64,11 @@ class WhatsAppClient extends EventEmitter {
             syncFullHistory: false,
             shouldSyncHistoryMessage: () => false,
             markOnlineOnConnect: false,
-            emitOwnEvents: false,
+            // Route-management commands are also allowed from the dedicated
+            // bot account. Baileys must therefore emit messages sent by the
+            // linked account, otherwise commands typed by the bot operator
+            // (for example `!setupreport`) never reach `message_create`.
+            emitOwnEvents: true,
             generateHighQualityLinkPreview: false,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
