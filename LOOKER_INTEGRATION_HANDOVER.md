@@ -57,7 +57,7 @@ See `.env.example`, `render.yaml` and [README.md](./README.md) for all limits/de
 
 ## Boundaries and handoff
 
-The implemented controls support a controlled pilot. Production still requires approved WhatsApp transport, dedicated identities, reliable infrastructure, backup/restore, managed secrets, privacy/retention decisions, malware scanning where required, monitoring and company-tenant acceptance. A durable queue is still needed for workloads that exceed synchronous request limits.
+The implemented controls support a controlled pilot. Production still requires approved WhatsApp transport, dedicated identities, reliable infrastructure, backup/restore, managed secrets, privacy/retention decisions, malware scanning where required, monitoring and company-tenant acceptance. As of v1.3.0, failed or stuck deliveries retry automatically with backoff and dead-letter after exhausting their attempts (see RISKS_AND_LIMITATIONS.md); a separate worker process and message-broker-style queueing are still needed for workloads that exceed one instance's synchronous request capacity.
 
 The optional authenticated Action Hub endpoints support a separate full-Looker path; Looker Studio scheduled emails do not use them. Browser cookies, passwords, private-report login and Puppeteer screenshots are outside this implementation.
 

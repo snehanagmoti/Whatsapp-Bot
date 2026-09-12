@@ -1,4 +1,4 @@
-# Using the Report Bot - v1.1.0
+# Using the Report Bot - v1.3.0
 
 ## One-time operator setup
 
@@ -81,7 +81,7 @@ Use a controlled chat and a small report: the supplied limits are five pages, 15
 
 Confirm the deployed version and readiness, the saved Apps Script source, the mailbox account, matching ingestion token, preserved cutover and the exact active alias. Then schedule one new delivery after the cutover. Check the mail receipt, bridge outcome and WhatsApp images in that order. Repeat with a second chat and a multi-page report.
 
-The local suite passed 69 tests without failures or skips during release preparation. Real email receipt, hosting availability and WhatsApp delivery still need this end-to-end acceptance test.
+The local suite passed 88 tests without failures or skips during release preparation. Real email receipt, hosting availability and WhatsApp delivery still need this end-to-end acceptance test.
 
 ## If the email arrives but the images do not
 
@@ -91,6 +91,7 @@ The local suite passed 69 tests without failures or skips during release prepara
 4. Check `/readyz` and `/versionz`, then the service logs for the matching Gmail message ID. Never publish the bearer token or secret routing address in a shared log.
 5. Interpret the response: 401 means token mismatch; 403 means sender rejection; 404 means no matching route; 413 means an oversized HTTP body; 429 means rate limiting; 503 means disconnected, unavailable or busy processing; 502 usually means conversion or sending failed.
 6. Network failures, 408, 429 and 5xx remain eligible for retry. Other 4xx responses are recorded as terminal. Correct the cause and use a fresh scheduled delivery; do not erase the whole processed ledger to force a resend.
+7. A delivery stuck as `failed` or `processing` no longer needs a fresh scheduled delivery to retry it: a background worker automatically retries it on its own (with backoff) using the PDF it already has on file, until it either delivers or exhausts its attempts and becomes `dead_letter`. Check the admin dashboard's deliveries table - a `dead_letter` entry with its last error means the automatic retries are done and the cause needs to be fixed manually (for example, a removed route) before a fresh delivery will succeed.
 
 The bridge searches read and unread mail. It scans recent threads in pages of fifty, up to five hundred by default. Gmail thread labels `Looker Report Bot/Forwarded` and `Looker Report Bot/Rejected` are informational; a conversation may contain several messages with different outcomes. The labels are not used to exclude whole conversations.
 

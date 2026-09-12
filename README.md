@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.2.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.3.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,13 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.3.0 changes
+
+- A durable retry layer for report delivery. Each claimed delivery now stores its own copy of the source PDF, so a delivery that fails - or gets stuck because the process crashed mid-send - no longer depends on Apps Script/Gmail resending the same email to be retried. A background worker (`studioDeliveryWorker.js`) sweeps for retryable deliveries on a fixed interval and resends them.
+- Retries use exponential backoff (`STUDIO_DELIVERY_RETRY_BASE_MS`, doubling per attempt, capped at 30 minutes) up to a bounded attempt count (`STUDIO_DELIVERY_MAX_ATTEMPTS`, default 6). A delivery that exhausts its attempts moves to a terminal `dead_letter` status instead of retrying forever - it stays visible with its last error in the admin dashboard and `/admin/api/deliveries`, and releases the stored PDF bytes once it gets there.
+- The synchronous HTTP ingest path (`/studio/email/ingest`) is unchanged: it still processes and responds inline for the common case, with the same status codes Apps Script already expects. The worker is strictly additive - a safety net behind it, not a replacement for it.
+- 6 new automated tests covering backoff timing, dead-letter transition, crash recovery (reclaiming a stale `processing` lease), a disconnected-WhatsApp no-op, a removed-route failure, and a full ingest-failure-to-worker-recovery path (88 total, up from 82).
 
 ## Release 1.2.0 changes
 
@@ -77,6 +84,9 @@ STUDIO_MAX_IMAGE_BYTES=7340032
 STUDIO_MAX_PAGE_POINTS=10000
 STUDIO_MAX_PAGE_PIXELS=2400
 STUDIO_MAX_TOTAL_PIXELS=20000000
+STUDIO_DELIVERY_MAX_ATTEMPTS=6
+STUDIO_DELIVERY_RETRY_BASE_MS=60000
+STUDIO_DELIVERY_WORKER_INTERVAL_MS=60000
 ```
 
 The lease is ten minutes in the supplied environment/Blueprint; the store's fallback without that variable is fifteen minutes. The PDF renderer reduces DPI when necessary to stay within the pixel cap and rejects documents beyond configured limits instead of silently dropping pages.
@@ -100,11 +110,15 @@ Run setup in the intended destination chat. The QR link is a one-time operator t
 
 ## Admin dashboard
 
-Operators managing routes across several chats can use the web dashboard at `/admin/` instead of WhatsApp commands one chat at a time: WhatsApp link status (with the linking QR code inline), create/pause/resume/rotate/remove for every route the bot knows about, and recent delivery outcomes per chat. It is protected by its own `STUDIO_ADMIN_TOKEN` bearer secret, separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`. See [USAGE_GUIDE.md](./USAGE_GUIDE.md#admin-dashboard) for setup and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#admin-dashboard) for its security model.
+Operators managing routes across several chats can use the web dashboard at `/admin/` instead of WhatsApp commands one chat at a time: WhatsApp link status (with the linking QR code inline), create/pause/resume/rotate/remove for every route the bot knows about, and recent delivery outcomes per chat - including any that reached a terminal `dead_letter` state after exhausting their retries. It is protected by its own `STUDIO_ADMIN_TOKEN` bearer secret, separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`. See [USAGE_GUIDE.md](./USAGE_GUIDE.md#admin-dashboard) for setup and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#admin-dashboard) for its security model.
+
+## Delivery retries and dead-lettering
+
+Every claimed delivery keeps its own copy of the source PDF until it either delivers or is permanently abandoned. A failed attempt - or one where the process crashed mid-send, leaving it stuck past its lease - is automatically picked back up by a background worker running inside the same service, on a fixed interval (`STUDIO_DELIVERY_WORKER_INTERVAL_MS`, default 60s), with exponential backoff between attempts (`STUDIO_DELIVERY_RETRY_BASE_MS`, doubling, capped at 30 minutes) up to `STUDIO_DELIVERY_MAX_ATTEMPTS` (default 6). This does not depend on Apps Script or Gmail resending the email. Once attempts are exhausted the delivery becomes `dead_letter`: terminal, visible with its last error in the admin dashboard, and its stored PDF bytes are released. See [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#delivery-retries-and-dead-lettering) for what this does and does not cover.
 
 ## Verification and release status
 
-The local release suite passed **82 tests with no failures or skips**. Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
+The local release suite passed **88 tests with no failures or skips**. Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
 
 Run with Node.js 22-24 and Poppler (`pdfinfo` and `pdftoppm`) installed:
 

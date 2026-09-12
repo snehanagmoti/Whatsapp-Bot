@@ -4,6 +4,7 @@ const { convertPdfToPngPages } = require('./pdfProcessor');
 const { startServer } = require('./server');
 const { handleStudioCommand } = require('./studioCommands');
 const { StudioEmailService } = require('./studioEmailService');
+const { StudioDeliveryWorker } = require('./studioDeliveryWorker');
 const { StudioRouteService } = require('./studioRouting');
 const { MongoStudioStore } = require('./studioStore');
 const { parseCsvSet } = require('./validation');
@@ -16,6 +17,7 @@ let latestQr = null;
 let latestQrAt = 0;
 let server = null;
 let studioStore = null;
+let deliveryWorker = null;
 
 const client = new WhatsAppClient({
     mongoUri: process.env.MONGODB_URI,
@@ -72,6 +74,20 @@ async function main() {
             allowedSenders
         });
         console.log(`Looker Studio email routing is enabled with ${allowedSenders.size} approved sender(s).`);
+
+        // Safety net for the synchronous ingest path above: retries deliveries
+        // that failed or got stuck (e.g. the process crashed mid-send) without
+        // depending on Apps Script/Gmail resending the report. See
+        // studioDeliveryWorker.js for why this doesn't change the ingest
+        // request/response contract.
+        deliveryWorker = new StudioDeliveryWorker({
+            store: studioStore,
+            client,
+            isClientReady: () => whatsappReady,
+            convertPdf: convertPdfToPngPages
+        });
+        deliveryWorker.start();
+        console.log(`Studio delivery retry worker started (max ${deliveryWorker.maxAttempts} attempts, checking every ${Math.round(deliveryWorker.intervalMs / 1000)}s).`);
     } else {
         console.warn('Looker Studio email routing is disabled because its environment variables are incomplete.');
     }
@@ -144,6 +160,7 @@ async function main() {
 async function shutdown(signal) {
     console.log(`Received ${signal}; shutting down.`);
     whatsappReady = false;
+    if (deliveryWorker) deliveryWorker.stop();
     if (server) await new Promise(resolve => server.close(resolve));
     await client.destroy().catch(() => {});
     if (studioStore) await studioStore.close().catch(() => {});

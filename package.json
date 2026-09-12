@@ -1,11 +1,11 @@
 {
   "name": "screenshot-bot",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
-    "check": "node --check index.js && node --check server.js && node --check whatsappClient.js && node --check baileysAuthStore.js && node --check studioStore.js && node --check studioRouting.js && node --check studioEmailService.js && node --check studioCommands.js && node --check pdfProcessor.js"
+    "check": "node --check index.js && node --check server.js && node --check whatsappClient.js && node --check baileysAuthStore.js && node --check studioStore.js && node --check studioRouting.js && node --check studioEmailService.js && node --check studioDeliveryWorker.js && node --check studioCommands.js && node --check pdfProcessor.js"
   },
   "keywords": [],
   "author": "",

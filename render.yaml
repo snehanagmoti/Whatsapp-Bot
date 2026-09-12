@@ -69,3 +69,9 @@ services:
         value: "30"
       - key: STUDIO_DELIVERY_LEASE_MS
         value: "600000"
+      - key: STUDIO_DELIVERY_MAX_ATTEMPTS
+        value: "6"
+      - key: STUDIO_DELIVERY_RETRY_BASE_MS
+        value: "60000"
+      - key: STUDIO_DELIVERY_WORKER_INTERVAL_MS
+        value: "60000"

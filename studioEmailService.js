@@ -1,3 +1,5 @@
+const { DEFAULT_MAX_DELIVERY_ATTEMPTS, DEFAULT_DELIVERY_RETRY_BASE_MS } = require('./studioStore');
+
 class StudioEmailError extends Error {
     constructor(message, statusCode = 400) {
         super(message);
@@ -31,6 +33,34 @@ function assertClaimOwnership(updated) {
     throw error;
 }
 
+// Sends the not-yet-delivered pages of an already-rendered report to one
+// chat, checkpointing progress after each page. Shared by the synchronous
+// ingest path and the background retry worker so both honor the same
+// resume-from-last-page and claim-ownership behavior.
+async function sendPdfPages({ store, client, messageId, chatId, routeName, subject, claimToken, nextPage, pages }) {
+    if (nextPage > pages.length) {
+        throw new Error('Saved delivery progress exceeds the rendered PDF page count.');
+    }
+    for (let index = nextPage; index < pages.length; index += 1) {
+        const captionParts = [routeName];
+        if (subject) captionParts.push(subject);
+        if (pages.length > 1) captionParts.push(`Page ${index + 1} of ${pages.length}`);
+        await client.sendMessage(chatId, {
+            mimetype: 'image/png',
+            data: pages[index].toString('base64'),
+            filename: `studio-report-page-${index + 1}.png`
+        }, { caption: captionParts.join(' — ').slice(0, 1024) });
+        if (typeof store.recordDeliveryProgress === 'function') {
+            assertClaimOwnership(await store.recordDeliveryProgress(
+                messageId,
+                chatId,
+                index + 1,
+                { totalPages: pages.length, claimToken }
+            ));
+        }
+    }
+}
+
 class StudioEmailService {
     constructor({
         routeService,
@@ -39,7 +69,9 @@ class StudioEmailService {
         isClientReady = () => true,
         convertPdf,
         allowedSenders = new Set(),
-        maxPdfBytes = Number(process.env.STUDIO_MAX_PDF_BYTES) || 15 * 1024 * 1024
+        maxPdfBytes = Number(process.env.STUDIO_MAX_PDF_BYTES) || 15 * 1024 * 1024,
+        maxAttempts = Number(process.env.STUDIO_DELIVERY_MAX_ATTEMPTS) || DEFAULT_MAX_DELIVERY_ATTEMPTS,
+        retryBaseMs = Number(process.env.STUDIO_DELIVERY_RETRY_BASE_MS) || DEFAULT_DELIVERY_RETRY_BASE_MS
     } = {}) {
         if (!routeService || !store || !client || !convertPdf) throw new Error('Studio email service dependencies are required.');
         this.routeService = routeService;
@@ -49,6 +81,8 @@ class StudioEmailService {
         this.convertPdf = convertPdf;
         this.allowedSenders = new Set([...allowedSenders].map(value => String(value).trim().toLowerCase()));
         this.maxPdfBytes = maxPdfBytes;
+        this.maxAttempts = maxAttempts;
+        this.retryBaseMs = retryBaseMs;
     }
 
     async process(payload = {}) {
@@ -101,7 +135,8 @@ class StudioEmailService {
                     messageId,
                     routeId: route._id,
                     chatId: route.chatId,
-                    subject
+                    subject,
+                    pdf
                 });
                 if (claim && claim.status === 'claimed') {
                     claimedRoutes.push({ route, claimToken: claim.claimToken, nextPage: claimPageOffset(claim) });
@@ -113,7 +148,9 @@ class StudioEmailService {
             }
         } catch (error) {
             await Promise.allSettled(claimedRoutes.map(({ route, claimToken }) =>
-                this.store.failDelivery(messageId, route.chatId, error.message || error, { claimToken })
+                this.store.failDelivery(messageId, route.chatId, error.message || error, {
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                })
             ));
             throw new StudioEmailError('Could not claim report delivery. Retry the request.', 503);
         }
@@ -136,7 +173,9 @@ class StudioEmailService {
             pages = await this.convertPdf(pdf);
         } catch (error) {
             await Promise.all(claimedRoutes.map(({ route, claimToken }) =>
-                this.store.failDelivery(messageId, route.chatId, error.message || error, { claimToken })
+                this.store.failDelivery(messageId, route.chatId, error.message || error, {
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                })
             ));
             throw new StudioEmailError(`Report delivery failed: ${error.message || error}`, 502);
         }
@@ -149,27 +188,10 @@ class StudioEmailService {
                 if (typeof this.store.renewDeliveryLease === 'function') {
                     assertClaimOwnership(await this.store.renewDeliveryLease(messageId, route.chatId, claimToken));
                 }
-                if (nextPage > pages.length) {
-                    throw new Error('Saved delivery progress exceeds the rendered PDF page count.');
-                }
-                for (let index = nextPage; index < pages.length; index += 1) {
-                    const captionParts = [route.name];
-                    if (subject) captionParts.push(subject);
-                    if (pages.length > 1) captionParts.push(`Page ${index + 1} of ${pages.length}`);
-                    await this.client.sendMessage(route.chatId, {
-                        mimetype: 'image/png',
-                        data: pages[index].toString('base64'),
-                        filename: `studio-report-page-${index + 1}.png`
-                    }, { caption: captionParts.join(' — ').slice(0, 1024) });
-                    if (typeof this.store.recordDeliveryProgress === 'function') {
-                        assertClaimOwnership(await this.store.recordDeliveryProgress(
-                            messageId,
-                            route.chatId,
-                            index + 1,
-                            { totalPages: pages.length, claimToken }
-                        ));
-                    }
-                }
+                await sendPdfPages({
+                    store: this.store, client: this.client, messageId, chatId: route.chatId,
+                    routeName: route.name, subject, claimToken, nextPage, pages
+                });
                 assertClaimOwnership(await this.store.completeDelivery(messageId, route.chatId, {
                     deliveredPages: pages.length,
                     totalPages: pages.length,
@@ -177,7 +199,9 @@ class StudioEmailService {
                 }));
                 deliveredRoutes += 1;
             } catch (error) {
-                await this.store.failDelivery(messageId, route.chatId, error.message || error, { claimToken });
+                await this.store.failDelivery(messageId, route.chatId, error.message || error, {
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                });
                 failures.push({ routeName: route.name, error: error.message || String(error) });
             }
         }
@@ -202,4 +226,4 @@ class StudioEmailService {
     }
 }
 
-module.exports = { StudioEmailError, StudioEmailService, decodePdf };
+module.exports = { StudioEmailError, StudioEmailService, decodePdf, sendPdfPages, assertClaimOwnership };

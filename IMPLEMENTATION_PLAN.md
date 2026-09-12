@@ -67,7 +67,7 @@ The local release suite passed 69 tests without failures or skips. These checks 
 - Decide whether the official WhatsApp Business Platform supports the required destination model; otherwise approve the residual Baileys risk before company use.
 - Assign a company-owned WhatsApp number, reporting mailbox, administrators and recovery ownership.
 - Use always-on compute and production database backups, restore testing and monitored capacity.
-- Introduce a durable queue and workers for workloads that cannot fit synchronous HTTP requests. Existing concurrency limits do not provide durable scheduling or dead-letter handling.
+- ~~Introduce a durable queue and workers for workloads that cannot fit synchronous HTTP requests.~~ Partially addressed in v1.3.0: a background worker now retries failed/stuck deliveries with backoff and moves exhausted ones to a terminal `dead_letter` status (see RISKS_AND_LIMITATIONS.md). Still missing: a separate worker process/dyno, horizontally scaled workers, and true message-broker-style queueing for workloads that exceed one instance's synchronous request capacity.
 - Add malware/content scanning, centralized alerts, delivery visibility and audited administration as required by company reports.
 - Apply managed secret storage, access review and documented key/pepper rotation and account-recovery procedures.
 - Define confidential-data, destination, retention and incident-response policies.

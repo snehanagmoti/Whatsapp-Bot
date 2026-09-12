@@ -132,6 +132,7 @@ function sanitizeDelivery(delivery) {
         totalPages: delivery.totalPages ?? null,
         attempts: delivery.attempts || 0,
         error: delivery.error || null,
+        nextAttemptAt: delivery.nextAttemptAt || null,
         createdAt: delivery.createdAt,
         updatedAt: delivery.updatedAt
     };
