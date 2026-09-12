@@ -79,10 +79,15 @@ async function main() {
     server = startServer(client, {
         isClientReady: () => whatsappReady,
         getLatestQr: () => latestQr && Date.now() - latestQrAt < 60000 ? latestQr : null,
-        studioEmailService
+        studioEmailService,
+        routeService,
+        studioStore
     });
     if (process.env.NODE_ENV === 'production' && !process.env.QR_SETUP_TOKEN) {
         console.warn('QR setup is disabled until QR_SETUP_TOKEN is configured.');
+    }
+    if (process.env.NODE_ENV === 'production' && !process.env.STUDIO_ADMIN_TOKEN) {
+        console.warn('Admin dashboard is disabled until STUDIO_ADMIN_TOKEN is configured.');
     }
 
     client.on('qr', qr => {

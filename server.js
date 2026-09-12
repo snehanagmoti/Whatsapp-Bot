@@ -109,6 +109,45 @@ function buildActionList(baseUrl) {
     };
 }
 
+function sanitizeRoute(route) {
+    if (!route) return null;
+    return {
+        id: String(route._id),
+        chatId: route.chatId,
+        name: route.name,
+        status: route.status,
+        createdAt: route.createdAt,
+        updatedAt: route.updatedAt
+    };
+}
+
+function sanitizeDelivery(delivery) {
+    if (!delivery) return null;
+    return {
+        chatId: delivery.chatId,
+        routeId: delivery.routeId ? String(delivery.routeId) : null,
+        subject: delivery.subject || '',
+        status: delivery.status,
+        deliveredPages: delivery.deliveredPages || 0,
+        totalPages: delivery.totalPages ?? null,
+        attempts: delivery.attempts || 0,
+        error: delivery.error || null,
+        createdAt: delivery.createdAt,
+        updatedAt: delivery.updatedAt
+    };
+}
+
+function handleAdminRouteError(res, error) {
+    if (error && error.code === 11000) {
+        return res.status(409).json({ error: 'A report route with that name already exists for this chat. Use rotate instead.' });
+    }
+    if (error && error.code === 'ROUTE_QUOTA_EXCEEDED') {
+        return res.status(error.statusCode || 409).json({ error: error.message });
+    }
+    console.error('Admin route request failed:', error && (error.message || error));
+    return res.status(500).json({ error: 'Could not complete the request.' });
+}
+
 function qrToSvg(value) {
     const qr = new QRCode(-1, QRErrorCorrectLevel.L);
     qr.addData(value);
@@ -133,10 +172,15 @@ function createApp({
     publicBaseUrl = process.env.PUBLIC_BASE_URL,
     maxImageBytes = Number(process.env.LOOKER_MAX_IMAGE_BYTES) || DEFAULT_MAX_IMAGE_BYTES,
     studioEmailService = null,
+    routeService = null,
+    studioStore = null,
     studioIngestToken = process.env.STUDIO_INGEST_TOKEN_OVERRIDE || process.env.STUDIO_INGEST_TOKEN,
     qrSetupToken = process.env.QR_SETUP_TOKEN || (process.env.NODE_ENV === 'production' ? undefined : lookerToken),
+    studioAdminToken = process.env.STUDIO_ADMIN_TOKEN
+        || (process.env.NODE_ENV === 'production' ? undefined : (process.env.QR_SETUP_TOKEN || lookerToken)),
     studioRateLimit = positiveInteger(process.env.STUDIO_RATE_LIMIT_PER_MINUTE, 30),
     actionRateLimit = positiveInteger(process.env.LOOKER_RATE_LIMIT_PER_MINUTE, 30),
+    adminRateLimit = positiveInteger(process.env.STUDIO_ADMIN_RATE_LIMIT_PER_MINUTE, 60),
     studioMaxConcurrent = positiveInteger(process.env.STUDIO_MAX_CONCURRENT_INGESTS, 2),
     studioRequestBytes = positiveInteger(process.env.STUDIO_MAX_REQUEST_BYTES, DEFAULT_STUDIO_REQUEST_BYTES)
 } = {}) {
@@ -149,7 +193,9 @@ function createApp({
     const studioBody = express.json({ limit: studioRequestBytes });
     const limitStudio = createRateLimiter({ maxRequests: studioRateLimit });
     const limitActions = createRateLimiter({ maxRequests: actionRateLimit });
+    const limitAdmin = createRateLimiter({ maxRequests: adminRateLimit });
     const gateStudio = createConcurrencyGate(studioMaxConcurrent);
+    const adminBody = express.json({ limit: '64kb' });
 
     const baseUrl = publicBaseUrl && publicBaseUrl.replace(/\/$/, '');
     const requireToken = (req, res, next) => {
@@ -168,6 +214,20 @@ function createApp({
         if (supplied && secretsMatch(supplied, studioIngestToken)) return next();
         console.warn('Studio ingestion token rejected.');
         return res.status(401).json({ error: 'Unauthorized.' });
+    };
+    const requireAdminToken = (req, res, next) => {
+        if (!studioAdminToken) return res.status(503).json({ error: 'STUDIO_ADMIN_TOKEN is not configured.' });
+        const match = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
+        const supplied = match && match[1];
+        if (supplied && secretsMatch(supplied, studioAdminToken)) return next();
+        console.warn('Admin dashboard token rejected.');
+        return res.status(401).json({ error: 'Unauthorized.' });
+    };
+    const requireRouting = (req, res, next) => {
+        if (!routeService || !studioStore) {
+            return res.status(503).json({ error: 'Looker Studio email routing is not configured on this bot.' });
+        }
+        return next();
     };
 
     app.get('/healthz', (req, res) => res.json({
@@ -202,6 +262,110 @@ function createApp({
         res.set('Cache-Control', 'no-store');
         res.set('X-Content-Type-Options', 'nosniff');
         return res.type('image/svg+xml').send(qrToSvg(qr));
+    });
+
+    // Management dashboard API. Separate from the QR setup token and the
+    // Studio ingestion token so an operator's dashboard credential does not
+    // have to be handed to whoever only needs to complete the WhatsApp link.
+    app.get('/admin/api/status', limitAdmin, requireAdminToken, (req, res) => res.json({
+        whatsappReady: Boolean(isClientReady()),
+        studioConfigured: Boolean(routeService && studioStore),
+        qrAvailable: Boolean(getLatestQr()),
+        ...deploymentInfo()
+    }));
+
+    app.get('/admin/api/qr.svg', limitAdmin, requireAdminToken, (req, res) => {
+        if (isClientReady()) return res.status(409).json({ error: 'WhatsApp is already connected.' });
+        const qr = getLatestQr();
+        if (!qr) return res.status(425).json({ error: 'Waiting for a QR code.' });
+        res.set('Cache-Control', 'no-store');
+        res.set('X-Content-Type-Options', 'nosniff');
+        return res.type('image/svg+xml').send(qrToSvg(qr));
+    });
+
+    app.get('/admin/api/routes', limitAdmin, requireAdminToken, requireRouting, async (req, res) => {
+        try {
+            const chatId = typeof req.query.chatId === 'string' ? req.query.chatId.trim() : '';
+            if (chatId && !isValidWhatsAppChatId(chatId)) {
+                return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+            }
+            const routes = chatId ? await routeService.listRoutes(chatId) : await studioStore.listAllRoutes({ limit: 500 });
+            return res.json({ routes: routes.map(sanitizeRoute) });
+        } catch (error) {
+            console.error('Admin route listing failed:', error.message || error);
+            return res.status(500).json({ error: 'Could not list report routes.' });
+        }
+    });
+
+    app.post('/admin/api/routes', limitAdmin, requireAdminToken, requireRouting, adminBody, async (req, res) => {
+        const chatId = typeof req.body.chatId === 'string' ? req.body.chatId.trim() : '';
+        const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+        if (!isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        if (!name || name.length > 80) return res.status(400).json({ error: 'Report name must be 1-80 characters.' });
+        try {
+            const created = await routeService.createRoute({ chatId, name, createdBy: 'admin-dashboard' });
+            return res.status(201).json({ route: sanitizeRoute(created.route), address: created.address });
+        } catch (error) {
+            return handleAdminRouteError(res, error);
+        }
+    });
+
+    app.post('/admin/api/routes/status', limitAdmin, requireAdminToken, requireRouting, adminBody, async (req, res) => {
+        const chatId = typeof req.body.chatId === 'string' ? req.body.chatId.trim() : '';
+        const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+        const status = req.body.status;
+        if (!isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        if (!name) return res.status(400).json({ error: 'A report name is required.' });
+        if (status !== 'active' && status !== 'paused') return res.status(400).json({ error: 'status must be "active" or "paused".' });
+        try {
+            const route = await routeService.setRouteStatus(chatId, name, status);
+            if (!route) return res.status(404).json({ error: 'Report route not found.' });
+            return res.json({ route: sanitizeRoute(route) });
+        } catch (error) {
+            return handleAdminRouteError(res, error);
+        }
+    });
+
+    app.post('/admin/api/routes/rotate', limitAdmin, requireAdminToken, requireRouting, adminBody, async (req, res) => {
+        const chatId = typeof req.body.chatId === 'string' ? req.body.chatId.trim() : '';
+        const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+        if (!isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        if (!name) return res.status(400).json({ error: 'A report name is required.' });
+        try {
+            const rotated = await routeService.rotateRoute(chatId, name);
+            if (!rotated) return res.status(404).json({ error: 'Report route not found.' });
+            return res.json({ route: sanitizeRoute(rotated.route), address: rotated.address });
+        } catch (error) {
+            return handleAdminRouteError(res, error);
+        }
+    });
+
+    app.post('/admin/api/routes/remove', limitAdmin, requireAdminToken, requireRouting, adminBody, async (req, res) => {
+        const chatId = typeof req.body.chatId === 'string' ? req.body.chatId.trim() : '';
+        const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+        if (!isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        if (!name) return res.status(400).json({ error: 'A report name is required.' });
+        if (req.body.confirm !== true) return res.status(400).json({ error: 'Set confirm:true to permanently remove this route.' });
+        try {
+            const removed = await routeService.removeRoute(chatId, name);
+            if (!removed) return res.status(404).json({ error: 'Report route not found.' });
+            return res.json({ removed: true });
+        } catch (error) {
+            return handleAdminRouteError(res, error);
+        }
+    });
+
+    app.get('/admin/api/deliveries', limitAdmin, requireAdminToken, requireRouting, async (req, res) => {
+        const chatId = typeof req.query.chatId === 'string' ? req.query.chatId.trim() : '';
+        if (chatId && !isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+        try {
+            const deliveries = await studioStore.listRecentDeliveries({ chatId: chatId || undefined, limit });
+            return res.json({ deliveries: deliveries.map(sanitizeDelivery) });
+        } catch (error) {
+            console.error('Admin delivery listing failed:', error.message || error);
+            return res.status(500).json({ error: 'Could not list recent deliveries.' });
+        }
     });
 
     app.post('/studio/email/ingest', requireStudioToken, limitStudio, gateStudio, studioBody, async (req, res) => {

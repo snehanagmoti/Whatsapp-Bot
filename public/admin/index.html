@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>WhatsApp Report Bot — Admin</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f7f8;
+    --card: #ffffff;
+    --text: #172b24;
+    --muted: #5b6b66;
+    --border: #e1e6e4;
+    --accent: #0f7a5c;
+    --accent-contrast: #ffffff;
+    --danger: #a62929;
+    --warn: #9a6b00;
+    --active: #0f7a5c;
+    --paused: #9a6b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101613;
+      --card: #1a2320;
+      --text: #eaf2ee;
+      --muted: #9fb0ab;
+      --border: #2b3733;
+      --accent: #35c890;
+      --accent-contrast: #06231a;
+      --danger: #ff8a80;
+      --warn: #e3b341;
+      --active: #35c890;
+      --paused: #e3b341;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  h1 { font-size: 1.25rem; margin: 0; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .badge.ok { color: var(--active); border-color: var(--active); }
+  .badge.warn { color: var(--paused); border-color: var(--paused); }
+  .badge.off { color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); padding: 7px 12px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.small { padding: 4px 9px; font-size: 0.82rem; }
+  input, select {
+    font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); width: 100%;
+  }
+  label { font-size: 0.82rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .row > * { flex: 1; min-width: 160px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  tr:last-child td { border-bottom: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  .muted { color: var(--muted); }
+  .status-active { color: var(--active); font-weight: 600; }
+  .status-paused { color: var(--paused); font-weight: 600; }
+  .status-delivered { color: var(--active); }
+  .status-processing { color: var(--muted); }
+  .status-failed { color: var(--danger); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { color: var(--muted); padding: 12px 0; font-size: 0.9rem; }
+  .banner {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 0.88rem;
+    border: 1px solid var(--border);
+  }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
+  .banner.success { border-color: var(--active); color: var(--active); }
+  .secret-box {
+    font-family: ui-monospace, monospace; word-break: break-all; background: var(--bg);
+    border: 1px dashed var(--border); border-radius: 8px; padding: 10px; margin: 8px 0;
+  }
+  #qrPanel { text-align: center; }
+  #qrPanel img { width: min(260px, 70vw); height: auto; image-rendering: pixelated; margin: 8px auto; display: block; }
+  #loginScreen { max-width: 420px; margin: 10vh auto 0; }
+  [hidden] { display: none !important; }
+  .footer-note { color: var(--muted); font-size: 0.78rem; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="loginScreen" class="card">
+    <h1 style="margin-bottom:6px">WhatsApp Report Bot</h1>
+    <p class="muted" style="margin-top:0">Enter the admin dashboard token to manage report routes and check WhatsApp status.</p>
+    <div id="loginError" class="banner error" hidden></div>
+    <label for="tokenInput">Admin token</label>
+    <input id="tokenInput" type="password" autocomplete="off" placeholder="Paste STUDIO_ADMIN_TOKEN">
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+      <button id="loginBtn" class="primary">Unlock dashboard</button>
+      <label style="display:flex; align-items:center; gap:6px; margin:0; font-size:0.82rem">
+        <input id="rememberToken" type="checkbox" style="width:auto"> Remember on this device
+      </label>
+    </div>
+  </div>
+
+  <div id="dashboard" hidden>
+    <header>
+      <h1>WhatsApp Report Bot — Admin</h1>
+      <div style="display:flex; gap:10px; align-items:center">
+        <span id="waBadge" class="badge off"><span class="dot"></span> checking…</span>
+        <button id="logoutBtn" class="small">Log out</button>
+      </div>
+    </header>
+
+    <div id="globalBanner"></div>
+
+    <div class="card" id="statusCard">
+      <h2>Bot status</h2>
+      <p class="mono muted" id="versionLine">—</p>
+      <div id="qrPanel" hidden>
+        <p>WhatsApp is not linked. Scan this QR code from <strong>WhatsApp → Settings → Linked devices → Link a device</strong>.</p>
+        <img id="qrImage" alt="WhatsApp linking QR code">
+        <p class="muted" id="qrStatusLine">Loading…</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Create a report route</h2>
+      <div class="row">
+        <div>
+          <label for="newChatId">WhatsApp chat ID</label>
+          <input id="newChatId" placeholder="120363000000000000@g.us">
+        </div>
+        <div>
+          <label for="newRouteName">Report name</label>
+          <input id="newRouteName" placeholder="Daily Sales" maxlength="80">
+        </div>
+        <div style="flex:0 0 auto; min-width:auto">
+          <button id="createRouteBtn" class="primary">Create route</button>
+        </div>
+      </div>
+      <p class="muted" style="margin-bottom:0">
+        Get a chat's ID by sending <span class="mono">!chatid</span> in it on WhatsApp.
+      </p>
+      <div id="newRouteResult"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <div>
+          <label for="routeFilter">Filter routes by chat ID (optional)</label>
+          <input id="routeFilter" placeholder="Leave blank to show every chat">
+        </div>
+        <div style="flex:0 0 auto; min-width:auto">
+          <button id="refreshRoutesBtn">Refresh</button>
+        </div>
+      </div>
+      <h2>Report routes</h2>
+      <div id="routesWrap"><p class="empty">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <div>
+          <label for="deliveryFilter">Filter deliveries by chat ID (optional)</label>
+          <input id="deliveryFilter" placeholder="Leave blank to show every chat">
+        </div>
+        <div style="flex:0 0 auto; min-width:auto">
+          <button id="refreshDeliveriesBtn">Refresh</button>
+        </div>
+      </div>
+      <h2>Recent deliveries</h2>
+      <div id="deliveriesWrap"><p class="empty">Loading…</p></div>
+    </div>
+
+    <p class="footer-note">
+      These routes can also be managed from WhatsApp with <span class="mono">!help</span>.
+      Route addresses are shown only once, right after creating or rotating a route — the server never stores or displays them again.
+    </p>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var STORAGE_KEY = 'studioAdminToken';
+  var token = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || '';
+  var pollTimer = null;
+
+  var el = {
+    loginScreen: document.getElementById('loginScreen'),
+    dashboard: document.getElementById('dashboard'),
+    tokenInput: document.getElementById('tokenInput'),
+    loginBtn: document.getElementById('loginBtn'),
+    loginError: document.getElementById('loginError'),
+    rememberToken: document.getElementById('rememberToken'),
+    logoutBtn: document.getElementById('logoutBtn'),
+    waBadge: document.getElementById('waBadge'),
+    versionLine: document.getElementById('versionLine'),
+    qrPanel: document.getElementById('qrPanel'),
+    qrImage: document.getElementById('qrImage'),
+    qrStatusLine: document.getElementById('qrStatusLine'),
+    globalBanner: document.getElementById('globalBanner'),
+    newChatId: document.getElementById('newChatId'),
+    newRouteName: document.getElementById('newRouteName'),
+    createRouteBtn: document.getElementById('createRouteBtn'),
+    newRouteResult: document.getElementById('newRouteResult'),
+    routeFilter: document.getElementById('routeFilter'),
+    refreshRoutesBtn: document.getElementById('refreshRoutesBtn'),
+    routesWrap: document.getElementById('routesWrap'),
+    deliveryFilter: document.getElementById('deliveryFilter'),
+    refreshDeliveriesBtn: document.getElementById('refreshDeliveriesBtn'),
+    deliveriesWrap: document.getElementById('deliveriesWrap')
+  };
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function fmtDate(value) {
+    if (!value) return '—';
+    var d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+
+  function showBanner(target, message, kind) {
+    target.innerHTML = message
+      ? '<div class="banner ' + (kind || 'error') + '">' + escapeHtml(message) + '</div>'
+      : '';
+  }
+
+  async function api(path, options) {
+    var response = await fetch(path, Object.assign({}, options, {
+      headers: Object.assign({ Authorization: 'Bearer ' + token }, (options && options.headers) || {})
+    }));
+    if (response.status === 401) {
+      logout('Session token was rejected. Enter it again.');
+      throw new Error('Unauthorized');
+    }
+    var body = null;
+    try { body = await response.json(); } catch (e) { /* no body */ }
+    if (!response.ok) {
+      throw new Error((body && body.error) || ('Request failed with status ' + response.status));
+    }
+    return body;
+  }
+
+  function logout(message) {
+    sessionStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+    token = '';
+    if (pollTimer) clearInterval(pollTimer);
+    el.dashboard.hidden = true;
+    el.loginScreen.hidden = false;
+    showBanner(el.loginError, message || '', 'error');
+    el.tokenInput.focus();
+  }
+
+  function enterDashboard() {
+    el.loginScreen.hidden = true;
+    el.dashboard.hidden = false;
+    refreshAll();
+    pollTimer = setInterval(refreshAll, 15000);
+  }
+
+  el.loginBtn.addEventListener('click', function () {
+    var value = el.tokenInput.value.trim();
+    if (!value) { showBanner(el.loginError, 'Enter the admin token.', 'error'); return; }
+    token = value;
+    (el.rememberToken.checked ? localStorage : sessionStorage).setItem(STORAGE_KEY, value);
+    showBanner(el.loginError, '', 'error');
+    enterDashboard();
+  });
+  el.tokenInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') el.loginBtn.click(); });
+  el.logoutBtn.addEventListener('click', function () { logout(); });
+
+  async function refreshStatus() {
+    try {
+      var status = await api('/admin/api/status');
+      el.waBadge.className = 'badge ' + (status.whatsappReady ? 'ok' : 'warn');
+      el.waBadge.innerHTML = '<span class="dot"></span> WhatsApp ' + (status.whatsappReady ? 'connected' : 'not connected');
+      el.versionLine.textContent = 'v' + status.version + (status.commit ? ' (' + status.commit.slice(0, 7) + ')' : '')
+        + ' · Studio routing ' + (status.studioConfigured ? 'configured' : 'not configured');
+      el.qrPanel.hidden = Boolean(status.whatsappReady);
+      if (!status.whatsappReady) await refreshQr();
+    } catch (error) {
+      if (error.message !== 'Unauthorized') showBanner(el.globalBanner, 'Could not load status: ' + error.message, 'error');
+    }
+  }
+
+  async function refreshQr() {
+    try {
+      var response = await fetch('/admin/api/qr.svg', { headers: { Authorization: 'Bearer ' + token } });
+      if (response.status === 425) { el.qrStatusLine.textContent = 'Waiting for a fresh QR code…'; return; }
+      if (response.status === 409) { el.qrStatusLine.textContent = 'Connected — refresh status.'; return; }
+      if (!response.ok) { el.qrStatusLine.textContent = 'Could not load the QR code.'; return; }
+      var blob = await response.blob();
+      var old = el.qrImage.src;
+      el.qrImage.src = URL.createObjectURL(blob);
+      if (old) URL.revokeObjectURL(old);
+      el.qrStatusLine.textContent = 'Scan within 60 seconds — it refreshes automatically.';
+    } catch (e) {
+      el.qrStatusLine.textContent = 'Could not load the QR code.';
+    }
+  }
+
+  function statusBadgeHtml(status) {
+    return '<span class="status-' + escapeHtml(status) + '">' + escapeHtml(status) + '</span>';
+  }
+
+  function routeRow(route) {
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono">' + escapeHtml(route.chatId) + '</td>' +
+      '<td>' + escapeHtml(route.name) + '</td>' +
+      '<td>' + statusBadgeHtml(route.status) + '</td>' +
+      '<td class="muted">' + escapeHtml(fmtDate(route.updatedAt)) + '</td>' +
+      '<td class="actions"></td>';
+    var actions = tr.querySelector('.actions');
+
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'small';
+    toggleBtn.textContent = route.status === 'active' ? 'Pause' : 'Resume';
+    toggleBtn.addEventListener('click', function () {
+      setRouteStatus(route, route.status === 'active' ? 'paused' : 'active');
+    });
+    actions.appendChild(toggleBtn);
+
+    var rotateBtn = document.createElement('button');
+    rotateBtn.className = 'small';
+    rotateBtn.textContent = 'Rotate';
+    rotateBtn.addEventListener('click', function () { rotateRoute(route); });
+    actions.appendChild(rotateBtn);
+
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'small danger';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', function () { removeRoute(route); });
+    actions.appendChild(removeBtn);
+
+    return tr;
+  }
+
+  async function setRouteStatus(route, status) {
+    try {
+      await api('/admin/api/routes/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: route.chatId, name: route.name, status: status })
+      });
+      showBanner(el.globalBanner, route.name + ' ' + (status === 'active' ? 'resumed' : 'paused') + '.', 'success');
+      loadRoutes();
+    } catch (error) {
+      showBanner(el.globalBanner, 'Could not update route: ' + error.message, 'error');
+    }
+  }
+
+  async function rotateRoute(route) {
+    if (!window.confirm(
+      'Rotating "' + route.name + '" immediately invalidates its current address.\n' +
+      'Any Looker Studio schedule still using the old address will stop delivering until updated.\n\nContinue?'
+    )) return;
+    try {
+      var result = await api('/admin/api/routes/rotate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: route.chatId, name: route.name })
+      });
+      showNewAddress(route.name + ' — new address', result.address);
+      loadRoutes();
+    } catch (error) {
+      showBanner(el.globalBanner, 'Could not rotate route: ' + error.message, 'error');
+    }
+  }
+
+  async function removeRoute(route) {
+    var typed = window.prompt(
+      'This permanently removes "' + route.name + '" for this chat.\nType the report name to confirm:'
+    );
+    if (typed === null) return;
+    if (typed.trim().toLowerCase() !== route.name.trim().toLowerCase()) {
+      showBanner(el.globalBanner, 'Name did not match — nothing was removed.', 'error');
+      return;
+    }
+    try {
+      await api('/admin/api/routes/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: route.chatId, name: route.name, confirm: true })
+      });
+      showBanner(el.globalBanner, route.name + ' removed.', 'success');
+      loadRoutes();
+    } catch (error) {
+      showBanner(el.globalBanner, 'Could not remove route: ' + error.message, 'error');
+    }
+  }
+
+  function showNewAddress(title, address) {
+    el.newRouteResult.innerHTML =
+      '<div class="banner success">' + escapeHtml(title) + ' (shown once — treat as a secret):' +
+      '<div class="secret-box">' + escapeHtml(address) + '</div>' +
+      'Add this address to the Looker Studio schedule\'s email delivery.</div>';
+  }
+
+  async function loadRoutes() {
+    var chatId = el.routeFilter.value.trim();
+    try {
+      var qs = chatId ? ('?chatId=' + encodeURIComponent(chatId)) : '';
+      var data = await api('/admin/api/routes' + qs);
+      el.routesWrap.innerHTML = '';
+      if (!data.routes.length) {
+        el.routesWrap.innerHTML = '<p class="empty">No report routes yet.</p>';
+        return;
+      }
+      var table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Chat ID</th><th>Name</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>';
+      var tbody = document.createElement('tbody');
+      data.routes.forEach(function (route) { tbody.appendChild(routeRow(route)); });
+      table.appendChild(tbody);
+      el.routesWrap.appendChild(table);
+    } catch (error) {
+      if (error.message !== 'Unauthorized') {
+        el.routesWrap.innerHTML = '<p class="empty">Could not load routes: ' + escapeHtml(error.message) + '</p>';
+      }
+    }
+  }
+
+  async function loadDeliveries() {
+    var chatId = el.deliveryFilter.value.trim();
+    try {
+      var qs = chatId ? ('?chatId=' + encodeURIComponent(chatId)) : '';
+      var data = await api('/admin/api/deliveries' + qs);
+      el.deliveriesWrap.innerHTML = '';
+      if (!data.deliveries.length) {
+        el.deliveriesWrap.innerHTML = '<p class="empty">No deliveries recorded yet.</p>';
+        return;
+      }
+      var table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Chat ID</th><th>Subject</th><th>Status</th><th>Pages</th><th>Attempts</th><th>Updated</th></tr></thead>';
+      var tbody = document.createElement('tbody');
+      data.deliveries.forEach(function (d) {
+        var tr = document.createElement('tr');
+        var pages = d.totalPages != null ? (d.deliveredPages + ' / ' + d.totalPages) : String(d.deliveredPages);
+        tr.innerHTML =
+          '<td class="mono">' + escapeHtml(d.chatId) + '</td>' +
+          '<td>' + escapeHtml(d.subject || '—') + '</td>' +
+          '<td>' + statusBadgeHtml(d.status) + (d.error ? '<div class="muted" style="font-size:0.78rem">' + escapeHtml(d.error) + '</div>' : '') + '</td>' +
+          '<td>' + escapeHtml(pages) + '</td>' +
+          '<td>' + escapeHtml(d.attempts) + '</td>' +
+          '<td class="muted">' + escapeHtml(fmtDate(d.updatedAt)) + '</td>';
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      el.deliveriesWrap.appendChild(table);
+    } catch (error) {
+      if (error.message !== 'Unauthorized') {
+        el.deliveriesWrap.innerHTML = '<p class="empty">Could not load deliveries: ' + escapeHtml(error.message) + '</p>';
+      }
+    }
+  }
+
+  el.createRouteBtn.addEventListener('click', async function () {
+    var chatId = el.newChatId.value.trim();
+    var name = el.newRouteName.value.trim();
+    el.newRouteResult.innerHTML = '';
+    if (!chatId || !name) { showBanner(el.newRouteResult, 'Chat ID and report name are both required.', 'error'); return; }
+    el.createRouteBtn.disabled = true;
+    try {
+      var result = await api('/admin/api/routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: chatId, name: name })
+      });
+      showNewAddress(name + ' — routing address', result.address);
+      el.newChatId.value = '';
+      el.newRouteName.value = '';
+      loadRoutes();
+    } catch (error) {
+      showBanner(el.newRouteResult, 'Could not create route: ' + error.message, 'error');
+    } finally {
+      el.createRouteBtn.disabled = false;
+    }
+  });
+
+  el.refreshRoutesBtn.addEventListener('click', loadRoutes);
+  el.refreshDeliveriesBtn.addEventListener('click', loadDeliveries);
+
+  function refreshAll() {
+    refreshStatus();
+    loadRoutes();
+    loadDeliveries();
+  }
+
+  if (token) enterDashboard();
+})();
+</script>
+</body>
+</html>

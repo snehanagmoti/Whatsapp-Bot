@@ -52,12 +52,24 @@ Group members do not need to receive the PDF in their email inboxes. Looker Stud
 !listreportlinks               List route names/statuses in the current chat
 !pausereport <name>             Skip future mail for that route
 !resumereport <name>            Accept future eligible mail again
-!rotatereport <name>            Replace a route's secret email address
+!rotatereport <name> --confirm  Replace a route's secret email address
 !removereport <name> --confirm  Permanently remove that route
 !chatid                        Show the current WhatsApp chat ID
+!help                          Show this command list
 ```
 
-The linked bot account, verified group administrators and identities in `STUDIO_ROUTE_ADMIN_IDS` can manage routes. Other users cannot configure an individual chat unless explicitly authorized. The default quota is twenty routes per chat. Removal without `--confirm` only returns confirmation instructions.
+The linked bot account, verified group administrators and identities in `STUDIO_ROUTE_ADMIN_IDS` can manage routes. Other users cannot configure an individual chat unless explicitly authorized. The default quota is twenty routes per chat. Removal and rotation without `--confirm` only return confirmation instructions — rotation immediately invalidates the current address, so any Looker Studio schedule still using it stops delivering until it is updated with the new one.
+
+## Admin dashboard
+
+The same route management is also available as a web dashboard at `/admin/` on the deployed service, for operators who manage several chats and would rather not do it one WhatsApp command at a time.
+
+1. Set `STUDIO_ADMIN_TOKEN` (a separate secret from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`) and open `https://your-service.example.com/admin/`.
+2. Paste the token into the unlock screen. It is kept only in the browser (session storage by default, or local storage if "Remember on this device" is checked) and sent as a bearer token to `/admin/api/*` — it is never written to any log or database.
+3. The dashboard shows WhatsApp link status (with the linking QR code inline when not connected), lets you create/pause/resume/rotate/remove report routes across every chat the bot knows about, and shows recent delivery outcomes per chat.
+4. As with the WhatsApp commands, a route's address is shown once, right after creation or rotation — treat it as a secret and add it straight to the Looker Studio schedule. The server never stores or re-displays the plaintext address.
+
+The dashboard calls the same `routeService` used by WhatsApp commands, so routes created one way are immediately visible and manageable the other way.
 
 The bot stores an HMAC of each token, so the list command cannot recover the original alias. If the alias is lost or exposed, rotate it and replace the old schedule recipient with the new address. Rotation invalidates the previous address. `!chatid` is useful for diagnostics and the optional full-Looker Action Hub; alias-based Studio setup already captures the destination automatically.
 

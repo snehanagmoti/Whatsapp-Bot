@@ -114,6 +114,36 @@ test('Mongo insert races only acknowledge a winner that has actually completed',
     }
 });
 
+test('listAllRoutes returns routes across chats, most recently updated first', async () => {
+    const store = new MemoryStudioStore();
+    await store.createRoute({ chatId: '1@g.us', name: 'Alpha', tokenHash: 'a', createdBy: 'x' });
+    await new Promise(resolve => setTimeout(resolve, 2));
+    await store.createRoute({ chatId: '2@g.us', name: 'Beta', tokenHash: 'b', createdBy: 'x' });
+    const routes = await store.listAllRoutes();
+    assert.equal(routes.length, 2);
+    assert.equal(routes[0].name, 'Beta');
+    assert.equal(routes[1].name, 'Alpha');
+    assert.equal(routes[0].tokenHash, 'b');
+});
+
+test('listRecentDeliveries filters by chat and sorts by most recently updated', async () => {
+    const store = new MemoryStudioStore();
+    await store.beginDelivery({ messageId: 'm1', chatId: '1@g.us', routeId: 'r1', subject: 'One' });
+    await new Promise(resolve => setTimeout(resolve, 2));
+    await store.beginDelivery({ messageId: 'm2', chatId: '2@g.us', routeId: 'r2', subject: 'Two' });
+
+    const all = await store.listRecentDeliveries();
+    assert.equal(all.length, 2);
+    assert.equal(all[0].subject, 'Two');
+
+    const scoped = await store.listRecentDeliveries({ chatId: '1@g.us' });
+    assert.equal(scoped.length, 1);
+    assert.equal(scoped[0].chatId, '1@g.us');
+
+    const limited = await store.listRecentDeliveries({ limit: 1 });
+    assert.equal(limited.length, 1);
+});
+
 test('Mongo legacy processing records return busy without acknowledging or inserting a new claim', async () => {
     const clock = new Date('2026-09-10T00:00:00.000Z');
     const request = { messageId: 'gmail:mongo-legacy123', chatId: '123@g.us', routeId: 'route-1' };

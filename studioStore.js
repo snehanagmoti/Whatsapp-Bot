@@ -21,6 +21,11 @@ function normalizeDeliveredPages(value) {
     return Number.isSafeInteger(pages) && pages >= 0 ? pages : 0;
 }
 
+function normalizeListLimit(value, fallback = 50) {
+    const limit = Number(value);
+    return Number.isSafeInteger(limit) && limit > 0 && limit <= 1000 ? limit : fallback;
+}
+
 function asDate(value) {
     const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
     if (!Number.isFinite(date.getTime())) throw new Error('Studio store clock returned an invalid date.');
@@ -141,6 +146,15 @@ class MongoStudioStore {
     async removeRoute(chatId, name) {
         const result = await this.routes.deleteOne({ chatId, nameKey: normalizeRouteName(name) });
         return result.deletedCount === 1;
+    }
+
+    listAllRoutes({ limit = 500 } = {}) {
+        return this.routes.find({}).sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
+    }
+
+    listRecentDeliveries({ chatId, limit = 50 } = {}) {
+        const filter = chatId ? { chatId } : {};
+        return this.deliveries.find(filter).sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject }) {
@@ -315,6 +329,19 @@ class MemoryStudioStore {
         if (index < 0) return false;
         this.routes.splice(index, 1);
         return true;
+    }
+
+    async listAllRoutes({ limit = 500 } = {}) {
+        return [...this.routes]
+            .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0))
+            .slice(0, normalizeListLimit(limit));
+    }
+
+    async listRecentDeliveries({ chatId, limit = 50 } = {}) {
+        return [...this.deliveries.values()]
+            .filter(delivery => !chatId || delivery.chatId === chatId)
+            .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0))
+            .slice(0, normalizeListLimit(limit));
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject }) {

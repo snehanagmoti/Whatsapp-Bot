@@ -88,6 +88,52 @@ test('requires an explicit confirmation before permanently removing a route', as
     assert.match(replies[1][1], /removed/);
 });
 
+test('requires an explicit confirmation before rotating a route', async () => {
+    const store = new MemoryStudioStore();
+    const routeService = new StudioRouteService({
+        store,
+        routingEmail: 'reports@example.com',
+        pepper: 'a-long-test-only-route-pepper-value'
+    });
+    const created = await routeService.createRoute({ chatId: '123@g.us', name: 'Daily Sales', createdBy: 'admin' });
+    const originalTokenHash = created.route.tokenHash;
+    const replies = [];
+    const options = {
+        client: { sendMessage: async (...args) => replies.push(args) },
+        routeService,
+        canManage: async () => true
+    };
+
+    await handleStudioCommand({
+        ...options,
+        message: { from: '123@g.us', senderId: 'admin', body: '!rotatereport Daily Sales' }
+    });
+    assert.match(replies[0][1], /!rotatereport Daily Sales --confirm/);
+    assert.match(replies[0][1], /invalidates the current address/i);
+
+    await handleStudioCommand({
+        ...options,
+        message: { from: '123@g.us', senderId: 'admin', body: '!rotatereport Daily Sales --confirm' }
+    });
+    assert.match(replies[1][1], /Route rotated/);
+    const rotatedRoute = (await routeService.listRoutes('123@g.us'))[0];
+    assert.notEqual(rotatedRoute.tokenHash, originalTokenHash);
+});
+
+test('!help lists commands without requiring management permission or configured routing', async () => {
+    const replies = [];
+    const handledWithoutRouting = await handleStudioCommand({
+        message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!help' },
+        client: { sendMessage: async (...args) => replies.push(args) },
+        routeService: null,
+        canManage: async () => false,
+        canSetup: async () => false
+    });
+    assert.equal(handledWithoutRouting, true);
+    assert.match(replies[0][1], /!setupreport/);
+    assert.match(replies[0][1], /!chatid/);
+});
+
 test('explains the per-chat route quota when setup would exceed it', async () => {
     const store = new MemoryStudioStore();
     const routeService = new StudioRouteService({

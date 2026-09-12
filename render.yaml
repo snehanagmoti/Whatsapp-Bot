@@ -25,6 +25,10 @@ services:
         generateValue: true
       - key: QR_SETUP_TOKEN
         generateValue: true
+      - key: STUDIO_ADMIN_TOKEN
+        generateValue: true
+      - key: STUDIO_ADMIN_RATE_LIMIT_PER_MINUTE
+        value: "60"
       - key: LOOKER_ALLOWED_CHAT_IDS
         sync: false
       - key: STUDIO_ROUTING_EMAIL

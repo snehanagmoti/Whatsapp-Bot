@@ -3,6 +3,21 @@ function commandArgument(text, command) {
     return text.startsWith(`${command} `) ? text.slice(command.length + 1).trim() : null;
 }
 
+const HELP_TEXT = [
+    '*Looker Studio report commands*',
+    '',
+    '!setupreport <name> — create a new report route in this chat',
+    '!listreportlinks — list this chat\'s report routes and their status',
+    '!pausereport <name> — stop delivering a route without deleting it',
+    '!resumereport <name> — re-enable a paused route',
+    '!rotatereport <name> --confirm — replace a route\'s secret address',
+    '!removereport <name> --confirm — permanently delete a route',
+    '!chatid — show this chat\'s WhatsApp ID (needed to manage routes from the dashboard)',
+    '!help — show this message',
+    '',
+    'The same routes can also be managed from the web dashboard at /admin/ on this bot\'s server.'
+].join('\n');
+
 async function handleStudioCommand({
     message,
     client,
@@ -13,8 +28,16 @@ async function handleStudioCommand({
     const chatId = message.fromMe ? message.to : message.from;
     const senderId = message.fromMe ? message.senderId || message.to : message.senderId || message.from;
     const text = String(message.body || '').trim();
-    const known = ['!setupreport', '!listreportlinks', '!pausereport', '!resumereport', '!rotatereport', '!removereport'];
+    const known = [
+        '!setupreport', '!listreportlinks', '!pausereport', '!resumereport',
+        '!rotatereport', '!removereport', '!help', '!studiohelp'
+    ];
     if (!known.some(command => text === command || text.startsWith(`${command} `))) return false;
+
+    if (text === '!help' || text === '!studiohelp') {
+        await client.sendMessage(chatId, HELP_TEXT);
+        return true;
+    }
 
     if (!routeService) {
         await client.sendMessage(chatId, 'Looker Studio email routing is not configured on this bot.');
@@ -73,10 +96,20 @@ async function handleStudioCommand({
         const rotateName = commandArgument(text, '!rotatereport');
         if (rotateName !== null) {
             if (!rotateName) {
-                await client.sendMessage(chatId, 'Usage: !rotatereport <report name>');
+                await client.sendMessage(chatId, 'Usage: !rotatereport <report name> --confirm');
                 return true;
             }
-            const rotated = await routeService.rotateRoute(chatId, rotateName);
+            const rotateConfirmation = /^(.*?)\s+--confirm$/i.exec(rotateName);
+            if (!rotateConfirmation || !rotateConfirmation[1].trim()) {
+                await client.sendMessage(
+                    chatId,
+                    `This immediately invalidates the current address for *${rotateName}*; any Looker Studio schedule still using ` +
+                    `the old address will stop delivering until it is updated. To continue, send:\n\n!rotatereport ${rotateName} --confirm`
+                );
+                return true;
+            }
+            const confirmedRotateName = rotateConfirmation[1].trim();
+            const rotated = await routeService.rotateRoute(chatId, confirmedRotateName);
             await client.sendMessage(chatId, rotated
                 ? `Route rotated for *${rotated.route.name}*. Replace the old Looker Studio recipient with:\n\n${rotated.address}`
                 : 'Report route not found.');

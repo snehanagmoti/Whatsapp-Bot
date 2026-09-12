@@ -46,6 +46,14 @@ Session records can be encrypted with AES-256-GCM using `WA_AUTH_ENCRYPTION_KEY`
 
 The production QR endpoint requires its separate `QR_SETUP_TOKEN`; the full-Looker action token is not a production fallback. QR codes are sensitive, short-lived link credentials. They must not be committed to GitHub or copied into shared reports. The current runtime can still print linking QR codes in private operator logs, so access to logs must be restricted.
 
+## Admin dashboard
+
+The `/admin/` dashboard and its `/admin/api/*` endpoints require a third, independent bearer token (`STUDIO_ADMIN_TOKEN`), rate-limited and compared with the same timing-safe check used elsewhere. It is deliberately separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN` so an operator credential for full route management is never the same secret handed to someone who only needs to complete the WhatsApp link, or the one Apps Script uses to post reports.
+
+The dashboard is a thin client over the existing `routeService`/`studioStore` methods used by the WhatsApp commands — it does not add a second source of truth, a database session, or server-side cookies. The token lives only in the browser (`sessionStorage`, or `localStorage` if the operator opts in) and is sent as a bearer header; it is never logged or persisted server-side. As with the WhatsApp flow, route addresses are returned once at creation/rotation time and are never stored or re-displayed in plaintext — the dashboard cannot show an existing route's address, only issue a new one via rotation.
+
+This is still a shared-secret model, not per-operator accounts: anyone with the token has full route management for every chat the bot serves, and the token cannot be scoped or individually revoked without rotating it for all operators. A company rollout wanting per-person audit trails or scoped access needs real authentication (e.g. OIDC/SSO) in front of `/admin/`, which is out of scope for this release.
+
 ## PDF and resource controls
 
 The supplied defaults limit PDF input to 15 MiB, reports to five pages, rendered images to 7 MiB each, each image dimension to 2,400 pixels and total output to twenty million pixels. PDF metadata is checked before conversion. Documents beyond page or geometry limits are rejected rather than truncated. DPI is reduced within supported bounds when necessary.

@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.1.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.2.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,14 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.2.0 changes
+
+- New `/admin/` web dashboard, protected by a dedicated `STUDIO_ADMIN_TOKEN`, for managing report routes and checking WhatsApp/delivery status across every chat without using WhatsApp commands one chat at a time. Backed by a JSON API under `/admin/api/*` covering status, QR linking, route CRUD and recent deliveries — all built on the existing `routeService`/`studioStore`, not a second source of truth.
+- `studioStore` gained `listAllRoutes()` and `listRecentDeliveries()` for cross-chat admin views, implemented for both the MongoDB and in-memory stores.
+- `!rotatereport` now requires `--confirm`, matching `!removereport`, since rotation immediately invalidates the route's current address.
+- New `!help` / `!studiohelp` WhatsApp command listing all commands, usable even when Studio routing isn't configured.
+- 12 new automated tests covering the admin API's auth, CRUD flows and the store's new query methods (82 total, up from 69).
 
 ## Release 1.1.0 changes
 
@@ -44,6 +52,7 @@ STUDIO_ROUTE_PEPPER=<stable random secret of at least 24 characters>
 STUDIO_INGEST_TOKEN=<random bearer token>
 STUDIO_ALLOWED_SENDERS=data-studio-noreply@google.com
 QR_SETUP_TOKEN=<separate random setup secret>
+STUDIO_ADMIN_TOKEN=<separate random admin-dashboard secret>
 WA_AUTH_ENCRYPTION_KEY=<stable random secret of at least 32 characters>
 ```
 
@@ -81,16 +90,21 @@ The lease is ten minutes in the supplied environment/Blueprint; the store's fall
 !listreportlinks
 !pausereport <report name>
 !resumereport <report name>
-!rotatereport <report name>
+!rotatereport <report name> --confirm
 !removereport <report name> --confirm
 !chatid
+!help
 ```
 
-Run setup in the intended destination chat. The QR link is a one-time operator task, not a task for every user. See [USAGE_GUIDE.md](./USAGE_GUIDE.md) for setup, schedules and testing.
+Run setup in the intended destination chat. The QR link is a one-time operator task, not a task for every user. Rotation now requires `--confirm`, matching removal, since it immediately invalidates the route's current address. See [USAGE_GUIDE.md](./USAGE_GUIDE.md) for setup, schedules and testing.
+
+## Admin dashboard
+
+Operators managing routes across several chats can use the web dashboard at `/admin/` instead of WhatsApp commands one chat at a time: WhatsApp link status (with the linking QR code inline), create/pause/resume/rotate/remove for every route the bot knows about, and recent delivery outcomes per chat. It is protected by its own `STUDIO_ADMIN_TOKEN` bearer secret, separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`. See [USAGE_GUIDE.md](./USAGE_GUIDE.md#admin-dashboard) for setup and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#admin-dashboard) for its security model.
 
 ## Verification and release status
 
-The local release suite passed **69 tests with no failures or skips**. Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
+The local release suite passed **82 tests with no failures or skips**. Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
 
 Run with Node.js 22-24 and Poppler (`pdfinfo` and `pdftoppm`) installed:
 
