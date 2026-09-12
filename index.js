@@ -39,6 +39,13 @@ async function canManageRoutes({ chatId, senderId, message }) {
     return process.env.NODE_ENV !== 'production' && process.env.STUDIO_ALLOW_TEST_SETUP === 'true';
 }
 
+async function canSetupRoutes(context) {
+    // Public setup is intentionally limited to creating a new route. Existing
+    // routes still require an administrator to pause, resume, rotate or remove.
+    if (String(process.env.STUDIO_ALLOW_PUBLIC_SETUP || '').toLowerCase() === 'true') return true;
+    return canManageRoutes(context);
+}
+
 async function main() {
     let routeService = null;
     let studioEmailService = null;
@@ -109,7 +116,13 @@ async function main() {
     });
     client.on('message_create', async message => {
         try {
-            if (await handleStudioCommand({ message, client, routeService, canManage: canManageRoutes })) return;
+            if (await handleStudioCommand({
+                message,
+                client,
+                routeService,
+                canManage: canManageRoutes,
+                canSetup: canSetupRoutes
+            })) return;
             const chatId = message.fromMe ? message.to : message.from;
             if (String(message.body || '').trim() === '!chatid') {
                 await client.sendMessage(chatId, `Your WhatsApp Chat ID is:\n\n*${chatId}*`);

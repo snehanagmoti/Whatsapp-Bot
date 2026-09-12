@@ -39,6 +39,8 @@ services:
         value: data-studio-noreply@google.com
       - key: STUDIO_ROUTE_ADMIN_IDS
         sync: false
+      - key: STUDIO_ALLOW_PUBLIC_SETUP
+        value: "true"
       - key: STUDIO_MAX_ROUTES_PER_CHAT
         value: "20"
       - key: STUDIO_MAX_PDF_BYTES

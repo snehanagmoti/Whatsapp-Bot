@@ -31,10 +31,31 @@ test('unauthorized users cannot create report routes', async () => {
         message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!setupreport Sales' },
         client: { sendMessage: async (...args) => replies.push(args) },
         routeService: {},
-        canManage: async () => false
+        canManage: async () => false,
+        canSetup: async () => false
     });
     assert.equal(handled, true);
-    assert.match(replies[0][1], /authorized user or group administrator/i);
+    assert.match(replies[0][1], /Report setup is not available to you/i);
+});
+
+test('public setup users cannot manage existing routes', async () => {
+    const store = new MemoryStudioStore();
+    const routeService = new StudioRouteService({
+        store,
+        routingEmail: 'reports@example.com',
+        pepper: 'a-long-test-only-route-pepper-value'
+    });
+    await routeService.createRoute({ chatId: '123@g.us', name: 'Daily Sales', createdBy: 'admin' });
+    const replies = [];
+    const handled = await handleStudioCommand({
+        message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!removereport Daily Sales' },
+        client: { sendMessage: async (...args) => replies.push(args) },
+        routeService,
+        canManage: async () => false,
+        canSetup: async () => true
+    });
+    assert.equal(handled, true);
+    assert.match(replies[0][1], /authorized user or group administrator can manage existing/i);
 });
 
 test('requires an explicit confirmation before permanently removing a route', async () => {
