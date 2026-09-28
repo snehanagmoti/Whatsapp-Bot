@@ -389,3 +389,51 @@ test('continues other destinations when one chat send fails and retries only the
     assert.equal(retried.deliveredRoutes, 1);
     assert.equal(retried.duplicateRoutes, 1);
 });
+
+test('answers a dead-lettered delivery with a terminal 422 instead of a retryable busy status', async () => {
+    let failSends = true;
+    const sends = [];
+    const { store, created, emailService } = await fixture({
+        maxAttempts: 2,
+        client: { sendMessage: async (...args) => { if (failSends) throw new Error('send failed'); sends.push(args); } }
+    });
+    const payload = {
+        messageId: 'gmail:dead-letter123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    const key = deliveryKey(payload.messageId, '123@g.us');
+    // Bypass backoff so both attempts come from the ingest path.
+    const retryNow = () => { store.deliveries.get(key).nextAttemptAt = new Date(0); };
+
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    retryNow();
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    assert.equal(store.deliveries.get(key).status, 'dead_letter');
+
+    failSends = false;
+    for (let replay = 0; replay < 2; replay += 1) {
+        await assert.rejects(() => emailService.process(payload), error =>
+            error.statusCode === 422 && error.code === 'DELIVERY_DEAD_LETTER' && /Sales/.test(error.message));
+    }
+    assert.equal(sends.length, 0, 'a dead-lettered delivery must not be resent by an upstream replay');
+    assert.equal(store.deliveries.get(key).attempts, 2, 'a replay must not consume further attempts');
+});
+
+test('delivers other destinations but still reports a terminal outcome when one is dead-lettered', async () => {
+    const { store, created, sends, emailService } = await fixture();
+    const second = await emailService.routeService.createRoute({ chatId: '456@g.us', name: 'Ops', createdBy: 'admin' });
+    const payload = {
+        messageId: 'gmail:mixed-dead-letter123', from: 'approved@example.com', to: `${created.address}, ${second.address}`,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await store.beginDelivery({ messageId: payload.messageId, chatId: '123@g.us', routeId: created.route._id });
+    Object.assign(store.deliveries.get(deliveryKey(payload.messageId, '123@g.us')), { status: 'dead_letter', error: 'gave up' });
+
+    await assert.rejects(() => emailService.process(payload), error =>
+        error.statusCode === 422 && /1 other destination\(s\) were delivered/.test(error.message));
+    assert.equal(sends.length, 2);
+    assert.ok(sends.every(([chatId]) => chatId === '456@g.us'));
+
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 422);
+    assert.equal(sends.length, 2, 'the delivered destination is not resent on replay');
+});

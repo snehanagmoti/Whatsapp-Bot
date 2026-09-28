@@ -78,7 +78,13 @@ function unclaimedResult(delivery) {
     // Only a confirmed completed record is safe to acknowledge as a duplicate.
     // A live lease (or a record changing underneath us) must remain retryable so
     // an upstream forwarder does not forget a report whose worker later crashes.
-    return { status: delivery && delivery.status === 'delivered' ? 'delivered' : 'busy' };
+    if (delivery && delivery.status === 'delivered') return { status: 'delivered' };
+    // A dead-lettered delivery exhausted its attempts. It is terminal: reporting
+    // it as busy would make the Gmail bridge re-upload the PDF on every run.
+    if (delivery && delivery.status === 'dead_letter') {
+        return { status: 'dead_letter', error: delivery.error || null };
+    }
+    return { status: 'busy' };
 }
 
 function deliveryOwnershipFilter(messageId, chatId, claimToken) {
