@@ -7,6 +7,13 @@ const { MemoryStudioStore, deliveryKey } = require('../studioStore');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.4\n% test fixture\n%%EOF\n');
 
+// Simulates the backoff window elapsing for every failed delivery.
+function openRetryWindows(store) {
+    for (const delivery of store.deliveries.values()) {
+        if (delivery.status === 'failed') delivery.nextAttemptAt = new Date(0);
+    }
+}
+
 async function fixture(overrides = {}) {
     const store = new MemoryStudioStore();
     const routeService = new StudioRouteService({
@@ -193,6 +200,7 @@ test('allows the same message to retry after a conversion failure', async () => 
     };
     await assert.rejects(() => emailService.process(payload), error =>
         error.statusCode === 502 && /temporary renderer failure/i.test(error.message));
+    openRetryWindows(store);
     const delivered = await emailService.process(payload);
     assert.equal(delivered.deliveredPages, 1);
     assert.equal(sends.length, 1);
@@ -346,6 +354,7 @@ test('retries a partial multi-page failure from the first unsent page', async ()
     const failed = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
     assert.equal(failed.status, 'failed');
     assert.equal(failed.deliveredPages, 1);
+    openRetryWindows(store);
 
     const retried = await emailService.process(payload);
     assert.equal(retried.deliveredPages, 3);
@@ -385,6 +394,7 @@ test('continues other destinations when one chat send fails and retries only the
     assert.equal(store.deliveries.get(deliveryKey(payload.messageId, '456@g.us')).status, 'delivered');
 
     store.retryAllowed = true;
+    openRetryWindows(store);
     const retried = await emailService.process(payload);
     assert.equal(retried.deliveredRoutes, 1);
     assert.equal(retried.duplicateRoutes, 1);
@@ -436,4 +446,34 @@ test('delivers other destinations but still reports a terminal outcome when one 
 
     await assert.rejects(() => emailService.process(payload), error => error.statusCode === 422);
     assert.equal(sends.length, 2, 'the delivered destination is not resent on replay');
+});
+
+test('an upstream retry waits for the same backoff window as the background worker', async () => {
+    let failSends = true;
+    const sends = [];
+    const { store, created, emailService } = await fixture({
+        retryBaseMs: 60_000,
+        client: { sendMessage: async (...args) => { if (failSends) throw new Error('send failed'); sends.push(args); } }
+    });
+    let clock = new Date('2026-09-10T00:00:00.000Z');
+    store.now = () => clock;
+    const payload = {
+        messageId: 'gmail:backoff-window123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    const record = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
+    assert.equal(record.nextAttemptAt.getTime(), clock.getTime() + 60_000);
+
+    failSends = false;
+    clock = new Date(clock.getTime() + 30_000);
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 503);
+    assert.equal(sends.length, 0, 'no resend inside the backoff window');
+    assert.equal(record.attempts, 1, 'an early retry does not consume an attempt');
+
+    clock = new Date(clock.getTime() + 30_000);
+    const result = await emailService.process(payload);
+    assert.equal(result.deliveredRoutes, 1);
+    assert.equal(sends.length, 2);
+    assert.equal(record.attempts, 2);
 });

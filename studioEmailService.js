@@ -165,16 +165,22 @@ class StudioEmailService {
                 }
             }
         } catch (error) {
+            // Nothing was sent for these claims, so release them for an immediate
+            // retry without consuming an attempt or imposing a backoff.
             await Promise.allSettled(claimedRoutes.map(({ route, claimToken }) =>
                 this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
+                    countAttempt: false, retryDelayMs: 0
                 })
             ));
             throw new StudioEmailError('Could not claim report delivery. Retry the request.', 503);
         }
         if (!claimedRoutes.length) {
             if (busyRoutes.length) {
-                throw new StudioEmailError('Report delivery is still processing for another request. Retry the request.', 503);
+                throw new StudioEmailError(
+                    'Report delivery is still processing or waiting for its scheduled retry. Retry the request later.',
+                    503
+                );
             }
             if (deadLetterRoutes.length) throw deadLetterError(deadLetterRoutes, 0);
             return {

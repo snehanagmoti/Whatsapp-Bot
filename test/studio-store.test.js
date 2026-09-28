@@ -159,3 +159,32 @@ test('Mongo legacy processing records return busy without acknowledging or inser
         });
     }
 });
+
+test('Mongo reclaim filter only matches failed deliveries whose retry window has opened', async () => {
+    const store = new MongoStudioStore({ uri: 'mongodb://127.0.0.1:27017', now: () => new Date('2026-09-10T00:10:00.000Z') });
+    let capturedFilter = null;
+    store.deliveries = {
+        findOne: async () => ({ _id: 'existing', status: 'failed', nextAttemptAt: new Date('2026-09-10T01:00:00.000Z') }),
+        findOneAndUpdate: async filter => { capturedFilter = filter; return null; }
+    };
+    const result = await store.beginDelivery({ messageId: 'gmail:filter123', routeId: 'r1', chatId: '123@g.us' });
+    assert.equal(result.status, 'busy');
+    const failedBranches = capturedFilter.$or.filter(branch => branch.status === 'failed');
+    assert.deepEqual(failedBranches, [
+        { status: 'failed', nextAttemptAt: { $exists: false } },
+        { status: 'failed', nextAttemptAt: { $lte: new Date('2026-09-10T00:10:00.000Z') } }
+    ]);
+});
+
+test('a failure recorded with countAttempt:false refunds the attempt and never dead-letters', async () => {
+    const clock = new Date('2026-09-10T00:00:00.000Z');
+    const store = new MemoryStudioStore({ now: () => clock });
+    const claim = await store.beginDelivery({ messageId: 'gmail:refund123', routeId: 'r1', chatId: '123@g.us', pdf: Buffer.from('%PDF-') });
+    await store.failDelivery('gmail:refund123', '123@g.us', 'released', {
+        claimToken: claim.claimToken, maxAttempts: 1, countAttempt: false, retryDelayMs: 0
+    });
+    const record = store.deliveries.get(deliveryKey('gmail:refund123', '123@g.us'));
+    assert.equal(record.status, 'failed');
+    assert.equal(record.attempts, 0);
+    assert.equal(record.nextAttemptAt.getTime(), clock.getTime());
+});
