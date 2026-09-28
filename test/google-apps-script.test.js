@@ -16,7 +16,11 @@ function runBridge({
     messageDate = new Date('2026-09-10T01:00:00.000Z'),
     threadCount = 1,
     fetchError = null,
-    maxThreads = 500
+    maxThreads = 500,
+    maxRuntimeSeconds = null,
+    clock = null,
+    onFetch = null,
+    attachmentError = null
 } = {}) {
     const requests = [];
     const logs = [];
@@ -27,6 +31,7 @@ function runBridge({
         BOT_INGEST_TOKEN: 'secret-token',
         ROUTING_MAILBOX: 'reports@example.com',
         FORWARD_MAX_THREADS_PER_RUN: String(maxThreads),
+        ...(maxRuntimeSeconds ? { FORWARD_MAX_RUNTIME_SECONDS: String(maxRuntimeSeconds) } : {}),
         PROCESSED_MESSAGE_IDS: JSON.stringify(processedIds)
     };
     if (includeCutover) values.FORWARD_NOT_BEFORE = '2026-09-10T00:00:00.000Z';
@@ -39,7 +44,10 @@ function runBridge({
     const threads = Array.from({ length: threadCount }, (_, index) => {
         const message = {
             getTo: () => recipient,
-            getAttachments: () => [attachment],
+            getAttachments: () => {
+                if (attachmentError && index === attachmentError.index) throw attachmentError.error;
+                return [attachment];
+            },
             getCc: () => cc,
             getDate: () => messageDate,
             getId: () => `message-${index + 123}`,
@@ -75,18 +83,27 @@ function runBridge({
         UrlFetchApp: { fetch: (url, options) => {
             if (fetchError) throw fetchError;
             requests.push({ url, options });
+            if (onFetch) onFetch({ values, requestCount: requests.length });
             return { getResponseCode: () => status, getContentText: () => 'response' };
         } },
         console: { log: (...args) => logs.push(args), warn: (...args) => logs.push(args), error: (...args) => logs.push(args) }
     };
     vm.runInNewContext(source, context);
-    context.forwardUnreadReports();
+    if (clock) context.forwarderNow_ = () => clock.now;
+    let runError = null;
+    try {
+        context.forwardUnreadReports();
+    } catch (error) {
+        runError = error;
+    }
 
     const ledger = Object.keys(values)
         .filter(key => /^PROCESSED_MESSAGE_IDS_\d+$/.test(key))
         .sort((a, b) => Number(a.match(/\d+$/)[0]) - Number(b.match(/\d+$/)[0]))
         .flatMap(key => JSON.parse(values[key]));
-    return { requests, searchCalls, labelsApplied, values, ledger, logs };
+    const summaryArgs = logs.find(args => String(args[0]).includes('summary'));
+    const summary = summaryArgs ? JSON.parse(summaryArgs[2]) : null;
+    return { requests, searchCalls, labelsApplied, values, ledger, logs, summary, runError };
 }
 
 test('Apps Script bridge forwards matching To/Cc aliases with bearer authentication', () => {
@@ -140,7 +157,7 @@ test('Apps Script bridge ignores unrelated and already processed messages', () =
     const unrelated = runBridge({ recipient: 'someone@example.com' });
     assert.equal(unrelated.requests.length, 0);
     const summary = unrelated.logs.find(args => args[0].includes('summary'));
-    assert.equal(summary[1], '1.1.0');
+    assert.equal(summary[1], '1.2.0');
     assert.equal(JSON.parse(summary[2]).unrelated, 1);
     const lookalike = runBridge({ recipient: 'reports+abcdef0123456789abcdef01@evil.example.com, x@example.com' });
     assert.equal(lookalike.requests.length, 0);
@@ -157,4 +174,59 @@ test('Apps Script bridge paginates busy mailboxes and persists a chunked ledger'
     assert.equal(result.ledger.length, 151);
     assert.ok(result.values.PROCESSED_MESSAGE_IDS_1);
     assert.equal(result.values.PROCESSED_MESSAGE_IDS, undefined);
+});
+
+
+function persistedLedger(values) {
+    return Object.keys(values)
+        .filter(key => /^PROCESSED_MESSAGE_IDS_\d+$/.test(key))
+        .flatMap(key => JSON.parse(values[key]));
+}
+
+test('Apps Script bridge stops starting new messages once its runtime budget is spent', () => {
+    const clock = { now: Date.parse('2026-09-10T02:00:00.000Z') };
+    const result = runBridge({
+        threadCount: 5,
+        maxRuntimeSeconds: 270,
+        clock,
+        onFetch: () => { clock.now += 100_000; }
+    });
+    assert.equal(result.requests.length, 3);
+    assert.equal(result.ledger.length, 3);
+    assert.equal(result.summary.timeBudgetReached, true);
+});
+
+test('Apps Script bridge checkpoints its ledger during a long run', () => {
+    const clock = { now: Date.parse('2026-09-10T02:00:00.000Z') };
+    const persistedAtFetch = [];
+    const result = runBridge({
+        threadCount: 4,
+        clock,
+        onFetch: ({ values }) => {
+            persistedAtFetch.push(persistedLedger(values).length);
+            clock.now += 40_000;
+        }
+    });
+    assert.equal(result.requests.length, 4);
+    // Every 30s+ of work the ledger is saved, so a run killed by Apps Script's
+    // execution limit keeps the messages it already forwarded.
+    assert.deepEqual(persistedAtFetch, [0, 1, 2, 3]);
+    assert.equal(result.ledger.length, 4);
+    assert.ok(result.summary.checkpoints >= 4);
+});
+
+test('Apps Script bridge saves forwarded messages even when an unexpected error ends the run', () => {
+    const result = runBridge({
+        threadCount: 3,
+        attachmentError: { index: 2, error: new Error('Gmail service unavailable') }
+    });
+    assert.match(String(result.runError && result.runError.message), /Gmail service unavailable/);
+    assert.equal(result.requests.length, 2);
+    assert.deepEqual(result.ledger, ['message-124', 'message-123']);
+});
+
+test('Apps Script bridge validates the runtime budget property', () => {
+    const result = runBridge({ maxRuntimeSeconds: 900 });
+    assert.match(String(result.runError && result.runError.message), /FORWARD_MAX_RUNTIME_SECONDS/);
+    assert.equal(result.requests.length, 0);
 });
