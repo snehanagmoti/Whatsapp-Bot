@@ -63,7 +63,7 @@ test('HTTP ingest performs a real PDF-to-PNG delivery and suppresses a replay', 
         assert.equal((await response.json()).deliveredPages, 1);
         assert.equal(sends.length, 1);
         assert.equal(sends[0][0], '123@g.us');
-        assert.equal(Buffer.from(sends[0][1].data, 'base64').subarray(1, 4).toString(), 'PNG');
+        assert.equal(sends[0][1].buffer.subarray(1, 4).toString(), 'PNG');
 
         const replay = await fetch(url, {
             method: 'POST',

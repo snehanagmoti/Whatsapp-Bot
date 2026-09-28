@@ -245,3 +245,24 @@ test('WhatsApp auth state encrypts, claims commands once and resets on a real se
     assert.equal(await auth.claimMessage('123@g.us::message-1', Date.now()), false, 'replay claims survive a reset');
     await auth.close();
 });
+
+test('Signal keys are read and written in batches on a real server', { skip }, async () => {
+    const baileys = await import('@whiskeysockets/baileys');
+    const dbName = testDbName();
+    cleanups.push(() => dropDatabase(dbName));
+    const auth = await createMongoAuthState({ uri, dbName, sessionId: 'batch', baileys, encryptionKey: 'b'.repeat(40) });
+    cleanups.push(() => auth.close());
+
+    const sessions = {};
+    for (let index = 0; index < 50; index += 1) sessions[`contact-${index}.0`] = { index, key: Buffer.from([index]) };
+    await auth.state.keys.set({ session: sessions, 'pre-key': { 1: { public: Buffer.from([9]) } } });
+
+    const ids = Object.keys(sessions);
+    const loaded = await auth.state.keys.get('session', [...ids, 'missing.0']);
+    assert.equal(Object.keys(loaded).length, 50);
+    assert.ok(Buffer.from(loaded['contact-7.0'].key).equals(Buffer.from([7])));
+
+    await auth.state.keys.set({ session: { 'contact-0.0': null, 'contact-1.0': null }, 'pre-key': { 1: null } });
+    assert.equal(Object.keys(await auth.state.keys.get('session', ids)).length, 48);
+    assert.deepEqual(await auth.state.keys.get('pre-key', ['1']), {});
+});

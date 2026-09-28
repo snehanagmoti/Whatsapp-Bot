@@ -127,8 +127,7 @@ async function createMongoAuthState({
         }
     }
 
-    async function writeSerializedValue(value, id) {
-        const idValue = documentId(id);
+    function serializedUpdate(value, idValue) {
         const set = {
             sessionId: normalizedSessionId,
             updatedAt: new Date()
@@ -141,25 +140,28 @@ async function createMongoAuthState({
             set.value = value;
             unset.encryptedValue = '';
         }
-        await collection.updateOne(
-            { _id: idValue },
-            { $set: set, $unset: unset },
-            { upsert: true }
-        );
+        return { $set: set, $unset: unset };
     }
 
-    async function readData(id) {
+    async function writeSerializedValue(value, id) {
         const idValue = documentId(id);
-        const record = await collection.findOne({ _id: idValue });
-        if (!record) return null;
+        await collection.updateOne({ _id: idValue }, serializedUpdate(value, idValue), { upsert: true });
+    }
 
+    function decodeRecord(record) {
         const serialized = record.encryptedValue
-            ? decryptValue(record.encryptedValue, authKey, idValue)
+            ? decryptValue(record.encryptedValue, authKey, record._id)
             : record.value;
         if (typeof serialized !== 'string') {
             throw new Error('The stored WhatsApp session record is invalid.');
         }
-        const value = JSON.parse(serialized, BufferJSON.reviver);
+        return { serialized, value: JSON.parse(serialized, BufferJSON.reviver) };
+    }
+
+    async function readData(id) {
+        const record = await collection.findOne({ _id: documentId(id) });
+        if (!record) return null;
+        const { serialized, value } = decodeRecord(record);
 
         // Existing plaintext records are upgraded in place on their first
         // successful read after WA_AUTH_ENCRYPTION_KEY is configured.
@@ -167,12 +169,26 @@ async function createMongoAuthState({
         return value;
     }
 
-    async function writeData(data, id) {
-        await writeSerializedValue(JSON.stringify(data, BufferJSON.replacer), id);
+    // Signal operations (group sends in particular) ask for many keys at
+    // once. Fetch them in one query instead of one round-trip per key.
+    async function readMany(ids) {
+        if (!ids.length) return new Map();
+        const records = await collection.find({ _id: { $in: ids.map(documentId) } }).toArray();
+        const values = new Map();
+        const migrations = [];
+        for (const record of records) {
+            const { serialized, value } = decodeRecord(record);
+            values.set(record._id, value);
+            if (authKey && !record.encryptedValue) {
+                migrations.push({ updateOne: { filter: { _id: record._id }, update: serializedUpdate(serialized, record._id) } });
+            }
+        }
+        if (migrations.length) await collection.bulkWrite(migrations, { ordered: false });
+        return values;
     }
 
-    async function removeData(id) {
-        await collection.deleteOne({ _id: documentId(id) });
+    async function writeData(data, id) {
+        await writeSerializedValue(JSON.stringify(data, BufferJSON.replacer), id);
     }
 
     const creds = await readData('creds') || initAuthCreds();
@@ -181,23 +197,30 @@ async function createMongoAuthState({
         keys: {
             get: async (type, ids) => {
                 const result = {};
-                await Promise.all(ids.map(async id => {
-                    let value = await readData(`${type}-${id}`);
+                const values = await readMany(ids.map(id => `${type}-${id}`));
+                for (const id of ids) {
+                    let value = values.get(documentId(`${type}-${id}`));
                     if (type === 'app-state-sync-key' && value) {
                         value = proto.Message.AppStateSyncKeyData.fromObject(value);
                     }
                     if (value) result[id] = value;
-                }));
+                }
                 return result;
             },
             set: async data => {
-                const writes = [];
+                // One unordered bulk write per Signal store update. Each key
+                // is its own document, so partial application on error is the
+                // same outcome the previous per-key writes had.
+                const operations = [];
                 for (const [type, entries] of Object.entries(data)) {
                     for (const [id, value] of Object.entries(entries || {})) {
-                        writes.push(value ? writeData(value, `${type}-${id}`) : removeData(`${type}-${id}`));
+                        const idValue = documentId(`${type}-${id}`);
+                        operations.push(value
+                            ? { updateOne: { filter: { _id: idValue }, update: serializedUpdate(JSON.stringify(value, BufferJSON.replacer), idValue), upsert: true } }
+                            : { deleteOne: { filter: { _id: idValue } } });
                     }
                 }
-                await Promise.all(writes);
+                if (operations.length) await collection.bulkWrite(operations, { ordered: false });
             },
             clear: async () => {
                 await collection.deleteMany({ sessionId: normalizedSessionId });
