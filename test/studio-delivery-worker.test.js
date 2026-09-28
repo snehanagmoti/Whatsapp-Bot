@@ -206,3 +206,50 @@ test('a synchronous ingest failure becomes retryable by the worker without Apps 
     assert.equal(recovered.status, 'delivered');
     assert.equal(sends.length, 2);
 });
+
+test('a WhatsApp disconnect during a retry does not consume one of the bounded attempts', async () => {
+    let clock = new Date('2026-09-12T00:00:00.000Z');
+    let ready = true;
+    const { store, created, sends, worker, setSendImpl } = await fixture({
+        now: () => clock, maxAttempts: 2, retryBaseMs: 1000, isClientReady: () => ready
+    });
+    const messageId = 'gmail:outage123';
+    const chatId = '123@g.us';
+    const key = deliveryKey(messageId, chatId);
+    const claim = await store.beginDelivery({ messageId, routeId: created.route._id, chatId, pdf });
+    await store.failDelivery(messageId, chatId, 'first failure', { claimToken: claim.claimToken, maxAttempts: 2, retryBaseMs: 1000 });
+
+    // Each worker retry is interrupted by WhatsApp dropping mid-send.
+    setSendImpl(async () => { ready = false; throw new Error('WhatsApp is not connected.'); });
+    for (let outage = 0; outage < 5; outage += 1) {
+        clock = new Date(clock.getTime() + 60_000);
+        ready = true;
+        await worker.tick();
+        assert.equal(store.deliveries.get(key).status, 'failed', 'an outage never dead-letters the delivery');
+        assert.equal(store.deliveries.get(key).attempts, 1);
+    }
+
+    setSendImpl(async (...args) => { sends.push(args); });
+    clock = new Date(clock.getTime() + 60_000);
+    ready = true;
+    await worker.tick();
+    assert.equal(store.deliveries.get(key).status, 'delivered');
+    assert.equal(sends.length, 2);
+});
+
+test('uncounted interruptions are capped so a persistently failing delivery still dead-letters', async () => {
+    const { MAX_UNCOUNTED_FAILURES } = require('../studioStore');
+    let clock = new Date('2026-09-12T00:00:00.000Z');
+    const store = new MemoryStudioStore({ now: () => clock });
+    const messageId = 'gmail:flapping123';
+    const chatId = '123@g.us';
+    let claim = await store.beginDelivery({ messageId, routeId: 'r1', chatId, pdf });
+    for (let index = 0; index < MAX_UNCOUNTED_FAILURES; index += 1) {
+        await store.failDelivery(messageId, chatId, 'interrupted', { claimToken: claim.claimToken, maxAttempts: 1, countAttempt: false });
+        clock = new Date(clock.getTime() + 60 * 60 * 1000);
+        claim = await store.claimRetryableDelivery({ maxAttempts: 1 });
+        assert.ok(claim, `retry ${index + 1} is claimable`);
+    }
+    await store.failDelivery(messageId, chatId, 'interrupted again', { claimToken: claim.claimToken, maxAttempts: 1, countAttempt: false });
+    assert.equal(store.deliveries.get(deliveryKey(messageId, chatId)).status, 'dead_letter');
+});

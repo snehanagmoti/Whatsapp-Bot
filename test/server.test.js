@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { afterEach, test } = require('node:test');
 const { once } = require('node:events');
-const { createApp } = require('../server');
+const { createApp, createRateLimiter } = require('../server');
 
 process.env.NODE_ENV = 'test';
 const servers = [];
@@ -284,4 +284,38 @@ test('a disconnected ingest caller cannot free a slot while processing continues
     const second = await fetch(`${base}/studio/email/ingest`, { method: 'POST', headers, body: '{}' });
     releaseWork();
     assert.equal(second.status, 503);
+});
+
+function fakeLimiterCall(limiter, { authorization = '', ip = '203.0.113.7' } = {}) {
+    let passed = false;
+    let statusCode = 200;
+    const req = { get: () => authorization, ip, socket: {} };
+    const res = { set() {}, status(code) { statusCode = code; return this; }, json() { return this; } };
+    limiter(req, res, () => { passed = true; });
+    return { passed, statusCode };
+}
+
+test('an IP-keyed limiter cannot be bypassed by inventing Authorization headers', () => {
+    const limiter = createRateLimiter({ maxRequests: 3, keyBy: 'ip' });
+    let passed = 0;
+    for (let index = 0; index < 500; index += 1) {
+        if (fakeLimiterCall(limiter, { authorization: `Bearer junk-${index}` }).passed) passed += 1;
+    }
+    assert.equal(passed, 3);
+    assert.equal(limiter.bucketCount(), 1);
+    assert.equal(fakeLimiterCall(limiter, { ip: '198.51.100.9' }).passed, true, 'other clients keep their own budget');
+});
+
+test('rate limiter sweeps expired buckets and caps the bucket table', () => {
+    let clock = 1_000_000;
+    const limiter = createRateLimiter({ maxRequests: 1, windowMs: 1000, maxBuckets: 5, now: () => clock });
+    for (let index = 0; index < 5; index += 1) fakeLimiterCall(limiter, { authorization: `Bearer ${index}` });
+    assert.equal(limiter.bucketCount(), 5);
+    const overflow = fakeLimiterCall(limiter, { authorization: 'Bearer overflow' });
+    assert.equal(overflow.passed, false);
+    assert.equal(overflow.statusCode, 429);
+
+    clock += 1001;
+    assert.equal(fakeLimiterCall(limiter, { authorization: 'Bearer after-window' }).passed, true);
+    assert.equal(limiter.bucketCount(), 1, 'expired buckets are removed');
 });

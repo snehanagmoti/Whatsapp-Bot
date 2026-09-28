@@ -131,6 +131,9 @@ async function main() {
         latestQrAt = 0;
         console.error('WhatsApp authentication failed:', message);
     });
+    client.on('session_reset', () => {
+        console.warn('Logged-out WhatsApp session was cleared. A new QR code will be offered at /setup/qr and in the admin dashboard.');
+    });
     client.on('disconnected', reason => {
         whatsappReady = false;
         console.warn('WhatsApp disconnected:', reason);

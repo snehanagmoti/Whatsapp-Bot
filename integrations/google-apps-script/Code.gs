@@ -8,6 +8,12 @@
  *   FORWARD_NOT_BEFORE          ISO-8601 cutover timestamp
  *   FORWARD_MAX_THREADS_PER_RUN 50-2000 (default: 500)
  *   FORWARD_LOOKBACK_DAYS       1-30 (default: 7)
+ *   FORWARD_MAX_RUNTIME_SECONDS 60-330 (default: 270)
+ *
+ * Apps Script stops an execution after six minutes without running `finally`
+ * blocks. The forwarder therefore stops starting new messages once its runtime
+ * budget is spent and checkpoints its processed-message ledger during the run,
+ * so a killed execution does not re-forward everything it already handled.
  *
  * Run installReportForwarder once. The installer records a cutover timestamp
  * before it creates the trigger, so deploying the bridge never replays an old
@@ -15,7 +21,7 @@
  */
 
 var REPORT_FORWARDER_CONFIG = {
-  version: '1.1.0',
+  version: '1.2.0',
   successLabel: 'Looker Report Bot/Forwarded',
   terminalLabel: 'Looker Report Bot/Rejected',
   ledgerPrefix: 'PROCESSED_MESSAGE_IDS_',
@@ -23,8 +29,15 @@ var REPORT_FORWARDER_CONFIG = {
   ledgerChunkSize: 100,
   ledgerChunkCount: 20,
   searchPageSize: 50,
-  defaultMaxThreads: 500
+  defaultMaxThreads: 500,
+  defaultMaxRuntimeSeconds: 270,
+  checkpointIntervalMs: 30000
 };
+
+// Indirection so tests can control time without replacing the Date global.
+function forwarderNow_() {
+  return new Date().getTime();
+}
 
 function installReportForwarder() {
   var properties = PropertiesService.getScriptProperties();
@@ -44,12 +57,26 @@ function forwardUnreadReports() {
     console.log('Report forwarder skipped: another execution holds the lock.');
     return;
   }
+  var startedAt = forwarderNow_();
   var stats = { threads: 0, messages: 0, alreadyProcessed: 0, beforeCutover: 0,
-    unrelated: 0, noPdf: 0, forwarded: 0, rejected: 0, retryable: 0 };
+    unrelated: 0, noPdf: 0, forwarded: 0, rejected: 0, retryable: 0,
+    checkpoints: 0, timeBudgetReached: false };
+  var properties = null;
+  var processedIds = null;
+  var ledgerChanged = false;
+  var lastCheckpointAt = startedAt;
+  var checkpoint = function () {
+    if (!ledgerChanged) return;
+    saveProcessedMessageIds_(properties, processedIds);
+    ledgerChanged = false;
+    lastCheckpointAt = forwarderNow_();
+    stats.checkpoints += 1;
+  };
 
   try {
-    var properties = PropertiesService.getScriptProperties();
+    properties = PropertiesService.getScriptProperties();
     var config = readForwarderConfig_(properties);
+    var deadline = startedAt + config.maxRuntimeSeconds * 1000;
     var cutover = ensureForwardNotBefore_(properties);
 
     // A direct first run (without running the installer) establishes a safe
@@ -59,10 +86,9 @@ function forwardUnreadReports() {
       return;
     }
 
-    var processedIds = loadProcessedMessageIds_(properties);
+    processedIds = loadProcessedMessageIds_(properties);
     var processed = {};
     processedIds.forEach(function (id) { processed[id] = true; });
-    var ledgerChanged = false;
     var successLabel = getOrCreateForwarderLabel_(REPORT_FORWARDER_CONFIG.successLabel);
     var terminalLabel = getOrCreateForwarderLabel_(REPORT_FORWARDER_CONFIG.terminalLabel);
     // Include the second immediately before the exact cutover so Gmail's
@@ -71,13 +97,19 @@ function forwardUnreadReports() {
     var queryAfter = Math.floor(cutover.date.getTime() / 1000) - 1;
     var query = 'has:attachment filename:pdf newer_than:' + config.lookbackDays + 'd after:' + queryAfter;
 
-    for (var start = 0; start < config.maxThreads; start += REPORT_FORWARDER_CONFIG.searchPageSize) {
+    for (var start = 0; start < config.maxThreads && !stats.timeBudgetReached; start += REPORT_FORWARDER_CONFIG.searchPageSize) {
       var pageSize = Math.min(REPORT_FORWARDER_CONFIG.searchPageSize, config.maxThreads - start);
       var threads = GmailApp.search(query, start, pageSize);
       stats.threads += threads.length;
 
       threads.forEach(function (thread) {
         thread.getMessages().forEach(function (message) {
+          if (stats.timeBudgetReached) return;
+          if (forwarderNow_() >= deadline) {
+            // Leave the remaining mail for the next trigger run.
+            stats.timeBudgetReached = true;
+            return;
+          }
           stats.messages += 1;
           var gmailMessageId = message.getId();
           if (processed[gmailMessageId]) { stats.alreadyProcessed += 1; return; }
@@ -134,6 +166,7 @@ function forwardUnreadReports() {
               // 408, 429 and all 5xx responses remain eligible for a later run.
               console.error('Retryable failure for Gmail message %s with HTTP %s: %s', gmailMessageId, status, response.getContentText());
             }
+            if (ledgerChanged && forwarderNow_() - lastCheckpointAt >= REPORT_FORWARDER_CONFIG.checkpointIntervalMs) checkpoint();
           } catch (error) {
             stats.retryable += 1;
             // Network and UrlFetch failures are transient unless the next run
@@ -145,9 +178,13 @@ function forwardUnreadReports() {
 
       if (threads.length < pageSize) break;
     }
-
-    if (ledgerChanged) saveProcessedMessageIds_(properties, processedIds);
   } finally {
+    // Also persist progress when an unexpected error ends the run early.
+    try {
+      checkpoint();
+    } catch (error) {
+      console.error('Could not save the processed-message ledger: %s', error && error.message ? error.message : error);
+    }
     console.log('Report forwarder v%s summary: %s', REPORT_FORWARDER_CONFIG.version, JSON.stringify(stats));
     lock.releaseLock();
   }
@@ -174,12 +211,18 @@ function readForwarderConfig_(properties) {
   if (!Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 30) {
     throw new Error('FORWARD_LOOKBACK_DAYS must be an integer from 1 to 30.');
   }
+  var runtimeValue = properties.getProperty('FORWARD_MAX_RUNTIME_SECONDS');
+  var maxRuntimeSeconds = runtimeValue ? Number(runtimeValue) : REPORT_FORWARDER_CONFIG.defaultMaxRuntimeSeconds;
+  if (!Number.isInteger(maxRuntimeSeconds) || maxRuntimeSeconds < 60 || maxRuntimeSeconds > 330) {
+    throw new Error('FORWARD_MAX_RUNTIME_SECONDS must be an integer from 60 to 330.');
+  }
   return {
     ingestUrl: ingestUrl,
     ingestToken: ingestToken,
     mailbox: mailbox,
     maxThreads: maxThreads,
-    lookbackDays: lookbackDays
+    lookbackDays: lookbackDays,
+    maxRuntimeSeconds: maxRuntimeSeconds
   };
 }
 

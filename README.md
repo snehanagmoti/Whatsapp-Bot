@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.3.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.3.1** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,19 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.3.1 changes
+
+Correctness and hardening fixes; no data migration is required and existing routes, WhatsApp credentials, secrets, delivery history and deduplication records are preserved.
+
+- **Dead letters are terminal at ingest.** A delivery that exhausted its retries used to be reported as "still processing" (HTTP 503), so the Gmail bridge re-uploaded the PDF every five minutes for up to seven days. It now answers HTTP 422 (`DELIVERY_DEAD_LETTER`), which the bridge records as permanently rejected. Other destinations in the same email are still delivered.
+- **One retry schedule.** Upstream ingest retries now respect a failed delivery's `nextAttemptAt` backoff, like the background worker. Inside the window they get a retryable 503 without sending or consuming an attempt.
+- **WhatsApp outages don't burn attempts.** A send that fails because WhatsApp disconnected mid-delivery is recorded without consuming one of the bounded attempts (capped at 24 such interruptions per delivery).
+- **Logout recovery.** When WhatsApp logs the linked device out, the bot clears the dead session, starts fresh credentials and reconnects, so a new QR code appears at `/setup/qr` and in the dashboard without a restart.
+- **Rate limiting.** Limiters mounted before authentication (admin API, `/setup/qr.svg`) are keyed by client address, so inventing tokens no longer bypasses them; expired buckets are swept and the table is capped.
+- **Leaner admin listing.** The deliveries query excludes stored PDFs instead of loading and discarding them.
+- **Gmail bridge v1.2.0** (`integrations/google-apps-script/Code.gs`): checkpoints its processed-message ledger during a run, saves it if a run ends in an error, and stops starting new messages after `FORWARD_MAX_RUNTIME_SECONDS` (default 270) so Apps Script's six-minute limit cannot discard a run's progress. Paste the new source into the Apps Script project; Script Properties and the cutover are unchanged.
+- **Tests.** 109 unit tests (up from 88) plus 8 MongoDB integration tests in `test/mongo-integration.test.js`, which run when `MONGODB_TEST_URI` points at a throwaway server (CI starts `mongo:7`). `scripts/measure-ingest-memory.js` measures ingest memory with large PDFs.
 
 ## Release 1.3.0 changes
 
@@ -118,7 +131,7 @@ Every claimed delivery keeps its own copy of the source PDF until it either deli
 
 ## Verification and release status
 
-The local release suite passed **88 tests with no failures or skips**. Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
+The local release suite passed **109 unit tests with no failures**; the 8 MongoDB integration tests are skipped unless `MONGODB_TEST_URI` is set (CI runs them against `mongo:7`). Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
 
 Run with Node.js 22-24 and Poppler (`pdfinfo` and `pdftoppm`) installed:
 

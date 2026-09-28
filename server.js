@@ -26,25 +26,52 @@ function positiveInteger(value, fallback) {
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function createRateLimiter({ maxRequests = 30, windowMs = 60_000 } = {}) {
+// Fixed-window limiter. `keyBy: 'credential'` buckets by the Authorization
+// header and must only be mounted after authentication, so the key space is
+// bounded by valid secrets. Limiters mounted before authentication must use
+// `keyBy: 'ip'`; otherwise every invented token would get a fresh bucket,
+// bypassing the limit and growing memory without bound. Expired buckets are
+// swept once per window and the table size is capped.
+function createRateLimiter({
+    maxRequests = 30,
+    windowMs = 60_000,
+    keyBy = 'credential',
+    maxBuckets = 10_000,
+    now = () => Date.now()
+} = {}) {
+    if (keyBy !== 'credential' && keyBy !== 'ip') throw new Error('keyBy must be "credential" or "ip".');
     const buckets = new Map();
-    return (req, res, next) => {
-        const now = Date.now();
-        const authorization = req.get('authorization') || '';
-        const identity = authorization || req.ip || req.socket.remoteAddress || 'unknown';
+    let nextSweepAt = 0;
+    const sweep = currentMs => {
+        for (const [key, bucket] of buckets) {
+            if (currentMs >= bucket.resetAt) buckets.delete(key);
+        }
+        nextSweepAt = currentMs + windowMs;
+    };
+    const limiter = (req, res, next) => {
+        const currentMs = now();
+        if (currentMs >= nextSweepAt) sweep(currentMs);
+        const address = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+        const identity = keyBy === 'ip' ? `ip:${address}` : (req.get('authorization') || `ip:${address}`);
         const key = crypto.createHash('sha256').update(identity).digest('hex');
         let bucket = buckets.get(key);
-        if (!bucket || now >= bucket.resetAt) {
-            bucket = { count: 0, resetAt: now + windowMs };
+        if (!bucket || currentMs >= bucket.resetAt) {
+            if (!bucket && buckets.size >= maxBuckets) {
+                res.set('Retry-After', String(Math.max(1, Math.ceil((nextSweepAt - currentMs) / 1000))));
+                return res.status(429).json({ error: 'Too many requests. Retry later.' });
+            }
+            bucket = { count: 0, resetAt: currentMs + windowMs };
             buckets.set(key, bucket);
         }
         bucket.count += 1;
         res.set('X-RateLimit-Limit', String(maxRequests));
         res.set('X-RateLimit-Remaining', String(Math.max(0, maxRequests - bucket.count)));
         if (bucket.count <= maxRequests) return next();
-        res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+        res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - currentMs) / 1000))));
         return res.status(429).json({ error: 'Too many requests. Retry later.' });
     };
+    limiter.bucketCount = () => buckets.size;
+    return limiter;
 }
 
 function createConcurrencyGate(maxConcurrent = 2) {
@@ -194,7 +221,10 @@ function createApp({
     const studioBody = express.json({ limit: studioRequestBytes });
     const limitStudio = createRateLimiter({ maxRequests: studioRateLimit });
     const limitActions = createRateLimiter({ maxRequests: actionRateLimit });
-    const limitAdmin = createRateLimiter({ maxRequests: adminRateLimit });
+    // Admin and setup endpoints are throttled before authentication, so they
+    // are keyed by client address (Express resolves it via `trust proxy`).
+    const limitAdmin = createRateLimiter({ maxRequests: adminRateLimit, keyBy: 'ip' });
+    const limitSetup = createRateLimiter({ maxRequests: adminRateLimit, keyBy: 'ip' });
     const gateStudio = createConcurrencyGate(studioMaxConcurrent);
     const adminBody = express.json({ limit: '64kb' });
 
@@ -253,7 +283,7 @@ function createApp({
         res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Link WhatsApp Bot</title><style>body{font-family:system-ui,sans-serif;margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f7f8;color:#172b24}.card{width:min(92vw,520px);padding:28px;background:#fff;border-radius:18px;box-shadow:0 10px 35px #0002;text-align:center}img{width:min(78vw,430px);height:auto;image-rendering:pixelated}p{line-height:1.5}.error{color:#a62929}</style></head><body><main class="card"><h1>Link WhatsApp Bot</h1><p id="status">Loading the latest secure QR code…</p><img id="qr" alt="WhatsApp linking QR code" hidden></main><script>const token=location.hash.slice(1);const status=document.getElementById('status');const image=document.getElementById('qr');async function refresh(){if(!token){status.className='error';status.textContent='The secure setup link is incomplete.';return;}try{const response=await fetch('/setup/qr.svg',{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(response.status===409){image.hidden=true;status.textContent='Connected successfully. You may close this page.';return;}if(!response.ok){image.hidden=true;status.className='error';status.textContent=response.status===425?'Waiting for a fresh QR code…':'Unable to load the QR code.';return;}const blob=await response.blob();const old=image.src;image.src=URL.createObjectURL(blob);if(old)URL.revokeObjectURL(old);image.hidden=false;status.className='';status.textContent='WhatsApp → Settings → Linked devices → Link a device';}catch{status.className='error';status.textContent='Could not refresh the QR code.';}}refresh();setInterval(refresh,5000);</script></body></html>`);
     });
 
-    app.get('/setup/qr.svg', (req, res) => {
+    app.get('/setup/qr.svg', limitSetup, (req, res) => {
         if (!qrSetupToken) return res.status(503).send('Setup token is not configured.');
         const supplied = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
         if (!supplied || !secretsMatch(supplied[1], qrSetupToken)) return res.status(401).send('Unauthorized.');

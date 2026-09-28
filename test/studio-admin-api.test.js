@@ -183,3 +183,21 @@ test('QR endpoint requires the admin token and reflects link state', async () =>
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /image\/svg\+xml/);
 });
+
+test('admin rate limit applies per client even when the bearer token changes on every request', async () => {
+    const { base } = await withRouting({ adminRateLimit: 2 });
+    const statuses = [];
+    for (let index = 0; index < 5; index += 1) {
+        const response = await fetch(`${base}/admin/api/status`, { headers: { Authorization: `Bearer guess-${index}` } });
+        statuses.push(response.status);
+    }
+    assert.deepEqual(statuses, [401, 401, 429, 429, 429]);
+});
+
+test('QR setup image endpoint is rate limited per client', async () => {
+    const base = await serve({ client: {}, qrSetupToken: 'setup-secret', adminRateLimit: 1, getLatestQr: () => null });
+    const first = await fetch(`${base}/setup/qr.svg`, { headers: { Authorization: 'Bearer wrong-1' } });
+    const second = await fetch(`${base}/setup/qr.svg`, { headers: { Authorization: 'Bearer wrong-2' } });
+    assert.equal(first.status, 401);
+    assert.equal(second.status, 429);
+});

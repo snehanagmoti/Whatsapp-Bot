@@ -5,6 +5,12 @@ const DEFAULT_DELIVERY_LEASE_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_DELIVERY_ATTEMPTS = 6;
 const DEFAULT_DELIVERY_RETRY_BASE_MS = 60 * 1000;
 const MAX_DELIVERY_RETRY_BACKOFF_MS = 30 * 60 * 1000;
+// Upper bound on failures that may be recorded without consuming an attempt
+// (see failurePlan). Beyond it they count normally, so a delivery that keeps
+// being interrupted still reaches dead_letter eventually.
+const MAX_UNCOUNTED_FAILURES = 24;
+
+const LISTING_EXCLUDED_FIELDS = Object.freeze({ pdfData: 0, claimToken: 0 });
 
 function normalizeRouteName(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -50,15 +56,38 @@ function computeRetryBackoffMs(attempts, retryBaseMs) {
     return Math.min(Number.isFinite(backoff) ? backoff : MAX_DELIVERY_RETRY_BACKOFF_MS, MAX_DELIVERY_RETRY_BACKOFF_MS);
 }
 
+// Decides how a failed attempt is recorded. `countAttempt: false` is for a
+// failure that was not a real delivery attempt (for example releasing a claim
+// that never sent anything): the attempt is refunded and can never
+// dead-letter the delivery. `retryDelayMs` overrides the exponential backoff.
+function failurePlan(attempts, now, { maxAttempts, retryBaseMs, countAttempt = true, retryDelayMs } = {}, uncountedFailures = 0) {
+    const used = Number(attempts || 0);
+    const counted = countAttempt || Number(uncountedFailures || 0) >= MAX_UNCOUNTED_FAILURES;
+    const exhausted = counted && used >= normalizeMaxDeliveryAttempts(maxAttempts);
+    const refund = !counted && used > 0;
+    const delayMs = Number.isFinite(retryDelayMs) && retryDelayMs >= 0
+        ? Math.floor(retryDelayMs)
+        : computeRetryBackoffMs(refund ? used - 1 : used, normalizeRetryBaseMs(retryBaseMs));
+    return { exhausted, refund, uncounted: !counted, nextAttemptAt: new Date(now.getTime() + delayMs) };
+}
+
 function asDate(value) {
     const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
     if (!Number.isFinite(date.getTime())) throw new Error('Studio store clock returned an invalid date.');
     return date;
 }
 
-function isReclaimableDelivery(delivery, staleBefore) {
+// A failed delivery waits out its backoff (nextAttemptAt) before any path -
+// the background worker or an upstream ingest retry - may claim it again.
+function retryWindowOpen(delivery, now) {
+    if (!delivery.nextAttemptAt || !now) return true;
+    const nextMs = new Date(delivery.nextAttemptAt).getTime();
+    return !Number.isFinite(nextMs) || nextMs <= now.getTime();
+}
+
+function isReclaimableDelivery(delivery, staleBefore, now) {
     if (!delivery) return true;
-    if (delivery.status === 'failed') return true;
+    if (delivery.status === 'failed') return retryWindowOpen(delivery, now);
     if (delivery.status !== 'processing') return false;
     const timestamp = delivery.updatedAt || delivery.createdAt;
     if (!timestamp) return true;
@@ -78,7 +107,13 @@ function unclaimedResult(delivery) {
     // Only a confirmed completed record is safe to acknowledge as a duplicate.
     // A live lease (or a record changing underneath us) must remain retryable so
     // an upstream forwarder does not forget a report whose worker later crashes.
-    return { status: delivery && delivery.status === 'delivered' ? 'delivered' : 'busy' };
+    if (delivery && delivery.status === 'delivered') return { status: 'delivered' };
+    // A dead-lettered delivery exhausted its attempts. It is terminal: reporting
+    // it as busy would make the Gmail bridge re-upload the PDF on every run.
+    if (delivery && delivery.status === 'dead_letter') {
+        return { status: 'dead_letter', error: delivery.error || null };
+    }
+    return { status: 'busy' };
 }
 
 function deliveryOwnershipFilter(messageId, chatId, claimToken) {
@@ -87,11 +122,12 @@ function deliveryOwnershipFilter(messageId, chatId, claimToken) {
     return filter;
 }
 
-function reclaimableDeliveryFilter(key, staleBefore) {
+function reclaimableDeliveryFilter(key, staleBefore, now) {
     return {
         _id: key,
         $or: [
-            { status: 'failed' },
+            { status: 'failed', nextAttemptAt: { $exists: false } },
+            { status: 'failed', nextAttemptAt: { $lte: now } },
             { status: 'processing', updatedAt: { $lte: staleBefore } },
             { status: 'processing', updatedAt: { $exists: false }, createdAt: { $lte: staleBefore } },
             { status: 'processing', updatedAt: { $exists: false }, createdAt: { $exists: false } }
@@ -183,7 +219,11 @@ class MongoStudioStore {
 
     listRecentDeliveries({ chatId, limit = 50 } = {}) {
         const filter = chatId ? { chatId } : {};
-        return this.deliveries.find(filter).sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
+        // Pending and failed deliveries carry their source PDF (up to the
+        // configured PDF size each). Exclude it in the query so a listing never
+        // pulls those blobs from MongoDB just to discard them.
+        return this.deliveries.find(filter, { projection: LISTING_EXCLUDED_FIELDS })
+            .sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {
@@ -198,7 +238,7 @@ class MongoStudioStore {
         const existing = await this.deliveries.findOne({ _id: key });
         if (existing) {
             const claimed = await this.deliveries.findOneAndUpdate(
-                reclaimableDeliveryFilter(key, staleBefore),
+                reclaimableDeliveryFilter(key, staleBefore, now),
                 {
                     $set: { routeId, chatId, subject, status: 'processing', claimToken, updatedAt: now, ...pdfUpdate },
                     $unset: { error: '', nextAttemptAt: '' },
@@ -215,7 +255,7 @@ class MongoStudioStore {
         // upgrade cannot resend an already delivered report, while allowing a
         // failed or abandoned record to migrate with its page progress intact.
         const legacy = await this.deliveries.findOne({ _id: messageId, chatId });
-        if (legacy && !isReclaimableDelivery(legacy, staleBefore)) return unclaimedResult(legacy);
+        if (legacy && !isReclaimableDelivery(legacy, staleBefore, now)) return unclaimedResult(legacy);
         const deliveredPages = normalizeDeliveredPages(legacy && legacy.deliveredPages);
         try {
             const delivery = {
@@ -282,28 +322,24 @@ class MongoStudioStore {
         return result.matchedCount === 1;
     }
 
-    async failDelivery(messageId, chatId, error, { claimToken, maxAttempts, retryBaseMs } = {}) {
+    async failDelivery(messageId, chatId, error, options = {}) {
+        const { claimToken, maxAttempts } = options;
         const now = asDate(this.now());
         const current = await this.deliveries.findOne(
             deliveryOwnershipFilter(messageId, chatId, claimToken),
-            { projection: { attempts: 1 } }
+            { projection: { attempts: 1, uncountedFailures: 1 } }
         );
         if (!current) return false;
-        const limit = normalizeMaxDeliveryAttempts(maxAttempts);
-        const exhausted = Number(current.attempts || 0) >= limit;
+        const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(current.attempts, now, options, current.uncountedFailures);
         const update = exhausted
             ? {
                 $set: { status: 'dead_letter', error: String(error).slice(0, 500), updatedAt: now },
                 $unset: { claimToken: '', pdfData: '', nextAttemptAt: '' }
             }
             : {
-                $set: {
-                    status: 'failed',
-                    error: String(error).slice(0, 500),
-                    updatedAt: now,
-                    nextAttemptAt: new Date(now.getTime() + computeRetryBackoffMs(current.attempts, normalizeRetryBaseMs(retryBaseMs)))
-                },
-                $unset: { claimToken: '' }
+                $set: { status: 'failed', error: String(error).slice(0, 500), updatedAt: now, nextAttemptAt },
+                $unset: { claimToken: '' },
+                ...(uncounted ? { $inc: { uncountedFailures: 1, ...(refund ? { attempts: -1 } : {}) } } : {})
             };
         const result = await this.deliveries.updateOne(
             deliveryOwnershipFilter(messageId, chatId, claimToken),
@@ -430,7 +466,8 @@ class MemoryStudioStore {
         return [...this.deliveries.values()]
             .filter(delivery => !chatId || delivery.chatId === chatId)
             .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0))
-            .slice(0, normalizeListLimit(limit));
+            .slice(0, normalizeListLimit(limit))
+            .map(({ pdfData, claimToken, ...listed }) => listed);
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {
@@ -441,7 +478,7 @@ class MemoryStudioStore {
         const claimToken = crypto.randomUUID();
         const pdfData = Buffer.isBuffer(pdf) ? pdf : undefined;
         if (existing) {
-            if (!isReclaimableDelivery(existing, staleBefore)) return unclaimedResult(existing);
+            if (!isReclaimableDelivery(existing, staleBefore, now)) return unclaimedResult(existing);
             Object.assign(existing, {
                 routeId, chatId, subject, status: 'processing', claimToken,
                 attempts: Number(existing.attempts || 0) + 1,
@@ -455,7 +492,7 @@ class MemoryStudioStore {
 
         const legacy = this.deliveries.get(messageId);
         const matchingLegacy = legacy && legacy.chatId === chatId ? legacy : null;
-        if (matchingLegacy && !isReclaimableDelivery(matchingLegacy, staleBefore)) return unclaimedResult(matchingLegacy);
+        if (matchingLegacy && !isReclaimableDelivery(matchingLegacy, staleBefore, now)) return unclaimedResult(matchingLegacy);
         const delivery = {
             messageId, routeId, chatId, subject, status: 'processing',
             claimToken,
@@ -505,23 +542,20 @@ class MemoryStudioStore {
         return true;
     }
 
-    async failDelivery(messageId, chatId, error, { claimToken, maxAttempts, retryBaseMs } = {}) {
+    async failDelivery(messageId, chatId, error, options = {}) {
+        const { claimToken } = options;
         const delivery = this.deliveries.get(deliveryKey(messageId, chatId));
         if (!delivery || delivery.status !== 'processing' || (claimToken && delivery.claimToken !== claimToken)) return false;
         const now = asDate(this.now());
-        const limit = normalizeMaxDeliveryAttempts(maxAttempts);
-        const exhausted = Number(delivery.attempts || 0) >= limit;
+        const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(delivery.attempts, now, options, delivery.uncountedFailures);
         if (exhausted) {
             Object.assign(delivery, { status: 'dead_letter', error: String(error), updatedAt: now });
             delete delivery.pdfData;
             delete delivery.nextAttemptAt;
         } else {
-            Object.assign(delivery, {
-                status: 'failed',
-                error: String(error),
-                updatedAt: now,
-                nextAttemptAt: new Date(now.getTime() + computeRetryBackoffMs(delivery.attempts, normalizeRetryBaseMs(retryBaseMs)))
-            });
+            Object.assign(delivery, { status: 'failed', error: String(error), updatedAt: now, nextAttemptAt });
+            if (refund) delivery.attempts = Number(delivery.attempts) - 1;
+            if (uncounted) delivery.uncountedFailures = Number(delivery.uncountedFailures || 0) + 1;
         }
         delete delivery.claimToken;
         return true;
@@ -572,6 +606,7 @@ module.exports = {
     DEFAULT_MAX_DELIVERY_ATTEMPTS,
     DEFAULT_DELIVERY_RETRY_BASE_MS,
     MAX_DELIVERY_RETRY_BACKOFF_MS,
+    MAX_UNCOUNTED_FAILURES,
     MemoryStudioStore,
     MongoStudioStore,
     computeRetryBackoffMs,

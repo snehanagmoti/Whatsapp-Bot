@@ -7,6 +7,13 @@ const { MemoryStudioStore, deliveryKey } = require('../studioStore');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.4\n% test fixture\n%%EOF\n');
 
+// Simulates the backoff window elapsing for every failed delivery.
+function openRetryWindows(store) {
+    for (const delivery of store.deliveries.values()) {
+        if (delivery.status === 'failed') delivery.nextAttemptAt = new Date(0);
+    }
+}
+
 async function fixture(overrides = {}) {
     const store = new MemoryStudioStore();
     const routeService = new StudioRouteService({
@@ -193,6 +200,7 @@ test('allows the same message to retry after a conversion failure', async () => 
     };
     await assert.rejects(() => emailService.process(payload), error =>
         error.statusCode === 502 && /temporary renderer failure/i.test(error.message));
+    openRetryWindows(store);
     const delivered = await emailService.process(payload);
     assert.equal(delivered.deliveredPages, 1);
     assert.equal(sends.length, 1);
@@ -346,6 +354,7 @@ test('retries a partial multi-page failure from the first unsent page', async ()
     const failed = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
     assert.equal(failed.status, 'failed');
     assert.equal(failed.deliveredPages, 1);
+    openRetryWindows(store);
 
     const retried = await emailService.process(payload);
     assert.equal(retried.deliveredPages, 3);
@@ -385,7 +394,103 @@ test('continues other destinations when one chat send fails and retries only the
     assert.equal(store.deliveries.get(deliveryKey(payload.messageId, '456@g.us')).status, 'delivered');
 
     store.retryAllowed = true;
+    openRetryWindows(store);
     const retried = await emailService.process(payload);
     assert.equal(retried.deliveredRoutes, 1);
     assert.equal(retried.duplicateRoutes, 1);
+});
+
+test('answers a dead-lettered delivery with a terminal 422 instead of a retryable busy status', async () => {
+    let failSends = true;
+    const sends = [];
+    const { store, created, emailService } = await fixture({
+        maxAttempts: 2,
+        client: { sendMessage: async (...args) => { if (failSends) throw new Error('send failed'); sends.push(args); } }
+    });
+    const payload = {
+        messageId: 'gmail:dead-letter123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    const key = deliveryKey(payload.messageId, '123@g.us');
+    // Bypass backoff so both attempts come from the ingest path.
+    const retryNow = () => { store.deliveries.get(key).nextAttemptAt = new Date(0); };
+
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    retryNow();
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    assert.equal(store.deliveries.get(key).status, 'dead_letter');
+
+    failSends = false;
+    for (let replay = 0; replay < 2; replay += 1) {
+        await assert.rejects(() => emailService.process(payload), error =>
+            error.statusCode === 422 && error.code === 'DELIVERY_DEAD_LETTER' && /Sales/.test(error.message));
+    }
+    assert.equal(sends.length, 0, 'a dead-lettered delivery must not be resent by an upstream replay');
+    assert.equal(store.deliveries.get(key).attempts, 2, 'a replay must not consume further attempts');
+});
+
+test('delivers other destinations but still reports a terminal outcome when one is dead-lettered', async () => {
+    const { store, created, sends, emailService } = await fixture();
+    const second = await emailService.routeService.createRoute({ chatId: '456@g.us', name: 'Ops', createdBy: 'admin' });
+    const payload = {
+        messageId: 'gmail:mixed-dead-letter123', from: 'approved@example.com', to: `${created.address}, ${second.address}`,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await store.beginDelivery({ messageId: payload.messageId, chatId: '123@g.us', routeId: created.route._id });
+    Object.assign(store.deliveries.get(deliveryKey(payload.messageId, '123@g.us')), { status: 'dead_letter', error: 'gave up' });
+
+    await assert.rejects(() => emailService.process(payload), error =>
+        error.statusCode === 422 && /1 other destination\(s\) were delivered/.test(error.message));
+    assert.equal(sends.length, 2);
+    assert.ok(sends.every(([chatId]) => chatId === '456@g.us'));
+
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 422);
+    assert.equal(sends.length, 2, 'the delivered destination is not resent on replay');
+});
+
+test('an upstream retry waits for the same backoff window as the background worker', async () => {
+    let failSends = true;
+    const sends = [];
+    const { store, created, emailService } = await fixture({
+        retryBaseMs: 60_000,
+        client: { sendMessage: async (...args) => { if (failSends) throw new Error('send failed'); sends.push(args); } }
+    });
+    let clock = new Date('2026-09-10T00:00:00.000Z');
+    store.now = () => clock;
+    const payload = {
+        messageId: 'gmail:backoff-window123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    const record = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
+    assert.equal(record.nextAttemptAt.getTime(), clock.getTime() + 60_000);
+
+    failSends = false;
+    clock = new Date(clock.getTime() + 30_000);
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 503);
+    assert.equal(sends.length, 0, 'no resend inside the backoff window');
+    assert.equal(record.attempts, 1, 'an early retry does not consume an attempt');
+
+    clock = new Date(clock.getTime() + 30_000);
+    const result = await emailService.process(payload);
+    assert.equal(result.deliveredRoutes, 1);
+    assert.equal(sends.length, 2);
+    assert.equal(record.attempts, 2);
+});
+
+test('a WhatsApp disconnect during an ingest send keeps the attempt budget intact', async () => {
+    let ready = true;
+    const { store, created, emailService } = await fixture({
+        maxAttempts: 1,
+        isClientReady: () => ready,
+        client: { sendMessage: async () => { ready = false; throw new Error('connection closed'); } }
+    });
+    const payload = {
+        messageId: 'gmail:ingest-outage123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    const record = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
+    assert.equal(record.status, 'failed', 'not dead-lettered despite maxAttempts: 1');
+    assert.equal(record.attempts, 0);
 });

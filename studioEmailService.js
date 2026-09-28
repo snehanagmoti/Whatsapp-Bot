@@ -20,6 +20,21 @@ function decodePdf(value, maxBytes) {
     return pdf;
 }
 
+// Dead-lettered destinations have exhausted their retry attempts. This is a
+// terminal outcome, so it uses a 4xx status that the Gmail bridge records as
+// permanently rejected instead of re-uploading the same PDF on every run.
+function deadLetterError(routes, deliveredRoutes) {
+    const names = routes.map(route => route.name).join(', ');
+    const delivered = deliveredRoutes ? ` ${deliveredRoutes} other destination(s) were delivered.` : '';
+    const error = new StudioEmailError(
+        `Report delivery was permanently abandoned after exhausting its retries for ${routes.length} destination(s): ${names}.`
+        + `${delivered} Check the admin dashboard for the last error.`,
+        422
+    );
+    error.code = 'DELIVERY_DEAD_LETTER';
+    return error;
+}
+
 function claimPageOffset(claim) {
     if (!claim || typeof claim !== 'object') return 0;
     const nextPage = Number(claim.nextPage);
@@ -128,6 +143,7 @@ class StudioEmailService {
 
         const claimedRoutes = [];
         const busyRoutes = [];
+        const deadLetterRoutes = [];
         let duplicateRoutes = 0;
         try {
             for (const route of activeRoutes) {
@@ -142,22 +158,31 @@ class StudioEmailService {
                     claimedRoutes.push({ route, claimToken: claim.claimToken, nextPage: claimPageOffset(claim) });
                 } else if (claim && claim.status === 'delivered') {
                     duplicateRoutes += 1;
+                } else if (claim && claim.status === 'dead_letter') {
+                    deadLetterRoutes.push(route);
                 } else {
                     busyRoutes.push(route);
                 }
             }
         } catch (error) {
+            // Nothing was sent for these claims, so release them for an immediate
+            // retry without consuming an attempt or imposing a backoff.
             await Promise.allSettled(claimedRoutes.map(({ route, claimToken }) =>
                 this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
+                    countAttempt: false, retryDelayMs: 0
                 })
             ));
             throw new StudioEmailError('Could not claim report delivery. Retry the request.', 503);
         }
         if (!claimedRoutes.length) {
             if (busyRoutes.length) {
-                throw new StudioEmailError('Report delivery is still processing for another request. Retry the request.', 503);
+                throw new StudioEmailError(
+                    'Report delivery is still processing or waiting for its scheduled retry. Retry the request later.',
+                    503
+                );
             }
+            if (deadLetterRoutes.length) throw deadLetterError(deadLetterRoutes, 0);
             return {
                 duplicate: true,
                 deliveredPages: 0,
@@ -200,7 +225,10 @@ class StudioEmailService {
                 deliveredRoutes += 1;
             } catch (error) {
                 await this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
+                    // A WhatsApp disconnect during the send is an outage, not a failed
+                    // report: do not let it use up the delivery's bounded attempts.
+                    countAttempt: Boolean(this.isClientReady())
                 });
                 failures.push({ routeName: route.name, error: error.message || String(error) });
             }
@@ -213,6 +241,7 @@ class StudioEmailService {
                 busyRoutes.length ? 503 : 502
             );
         }
+        if (deadLetterRoutes.length) throw deadLetterError(deadLetterRoutes, deliveredRoutes);
 
         return {
             duplicate: false,
