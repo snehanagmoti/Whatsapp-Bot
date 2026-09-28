@@ -151,6 +151,7 @@ function sanitizeRoute(route) {
 function sanitizeDelivery(delivery) {
     if (!delivery) return null;
     return {
+        messageId: delivery.messageId || null,
         chatId: delivery.chatId,
         routeId: delivery.routeId ? String(delivery.routeId) : null,
         subject: delivery.subject || '',
@@ -160,6 +161,8 @@ function sanitizeDelivery(delivery) {
         attempts: delivery.attempts || 0,
         error: delivery.error || null,
         nextAttemptAt: delivery.nextAttemptAt || null,
+        // Only dead letters whose source PDF is still stored can be retried.
+        canRetry: delivery.status === 'dead_letter' && Boolean(delivery.pdfRef),
         createdAt: delivery.createdAt,
         updatedAt: delivery.updatedAt
     };
@@ -396,6 +399,28 @@ function createApp({
         } catch (error) {
             console.error('Admin delivery listing failed:', error.message || error);
             return res.status(500).json({ error: 'Could not list recent deliveries.' });
+        }
+    });
+
+    app.post('/admin/api/deliveries/retry', limitAdmin, requireAdminToken, requireRouting, adminBody, async (req, res) => {
+        const chatId = typeof req.body.chatId === 'string' ? req.body.chatId.trim() : '';
+        const messageId = typeof req.body.messageId === 'string' ? req.body.messageId.trim() : '';
+        if (!isValidWhatsAppChatId(chatId)) return res.status(400).json({ error: 'Enter a valid WhatsApp chat ID.' });
+        if (!/^[A-Za-z0-9._:@/-]{6,250}$/.test(messageId)) return res.status(400).json({ error: 'A valid messageId is required.' });
+        if (typeof studioStore.requeueDelivery !== 'function') return res.status(501).json({ error: 'Retry is not supported by this store.' });
+        try {
+            const result = await studioStore.requeueDelivery(messageId, chatId);
+            if (result.status === 'requeued') {
+                return res.json({ requeued: true, message: 'Queued. The delivery worker retries it within about a minute.' });
+            }
+            if (result.status === 'not_found') return res.status(404).json({ error: 'Delivery not found.' });
+            if (result.status === 'pdf_missing') {
+                return res.status(410).json({ error: 'The stored report PDF has expired. Send the report again from Looker Studio.' });
+            }
+            return res.status(409).json({ error: `Only deliveries that gave up can be retried (current status: ${result.current || 'unknown'}).` });
+        } catch (error) {
+            console.error('Admin delivery retry failed:', error.message || error);
+            return res.status(500).json({ error: 'Could not queue the retry.' });
         }
     });
 

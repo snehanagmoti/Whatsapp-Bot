@@ -450,6 +450,22 @@
     }
   }
 
+  async function retryDelivery(delivery, button) {
+    button.disabled = true;
+    try {
+      var result = await api('/admin/api/deliveries/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId: delivery.messageId, chatId: delivery.chatId })
+      });
+      showBanner(el.globalBanner, result.message || 'Retry queued.', 'success');
+      loadDeliveries();
+    } catch (error) {
+      button.disabled = false;
+      showBanner(el.globalBanner, 'Could not retry: ' + error.message, 'error');
+    }
+  }
+
   async function loadDeliveries() {
     var chatId = el.deliveryFilter.value.trim();
     try {
@@ -461,7 +477,7 @@
         return;
       }
       var table = document.createElement('table');
-      table.innerHTML = '<thead><tr><th>Chat ID</th><th>Subject</th><th>Status</th><th>Pages</th><th>Attempts</th><th>Updated</th></tr></thead>';
+      table.innerHTML = '<thead><tr><th>Chat ID</th><th>Subject</th><th>Status</th><th>Pages</th><th>Attempts</th><th>Updated</th><th></th></tr></thead>';
       var tbody = document.createElement('tbody');
       data.deliveries.forEach(function (d) {
         var tr = document.createElement('tr');
@@ -472,7 +488,16 @@
           '<td>' + statusBadgeHtml(d.status) + (d.error ? '<div class="muted" style="font-size:0.78rem">' + escapeHtml(d.error) + '</div>' : '') + '</td>' +
           '<td>' + escapeHtml(pages) + '</td>' +
           '<td>' + escapeHtml(d.attempts) + '</td>' +
-          '<td class="muted">' + escapeHtml(fmtDate(d.updatedAt)) + '</td>';
+          '<td class="muted">' + escapeHtml(fmtDate(d.updatedAt)) + '</td>' +
+          '<td class="actions"></td>';
+        if (d.canRetry && d.messageId) {
+          var retryBtn = document.createElement('button');
+          retryBtn.className = 'small';
+          retryBtn.textContent = 'Retry';
+          retryBtn.title = 'Send this report to the chat again with a fresh set of attempts';
+          retryBtn.addEventListener('click', function () { retryDelivery(d, retryBtn); });
+          tr.querySelector('.actions').appendChild(retryBtn);
+        }
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);

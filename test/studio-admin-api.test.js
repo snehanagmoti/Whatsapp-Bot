@@ -201,3 +201,48 @@ test('QR setup image endpoint is rate limited per client', async () => {
     assert.equal(first.status, 401);
     assert.equal(second.status, 429);
 });
+
+test('retries a dead-lettered delivery through the admin API', async () => {
+    const { base, store } = await withRouting();
+    const pdf = Buffer.from('%PDF-1.4 admin retry');
+    const messageId = 'gmail:admin-retry-1';
+    const pdfRef = await store.savePdf(messageId, pdf);
+    const claim = await store.beginDelivery({ messageId, routeId: 'r1', chatId: '1@g.us', subject: 'Weekly', pdfRef });
+    await store.failDelivery(messageId, '1@g.us', 'gave up', { claimToken: claim.claimToken, maxAttempts: 1 });
+
+    const listed = (await (await authed(base, '/admin/api/deliveries')).json()).deliveries[0];
+    assert.equal(listed.status, 'dead_letter');
+    assert.equal(listed.canRetry, true);
+    assert.equal(listed.messageId, messageId);
+    assert.equal(listed.pdfRef, undefined, 'internal references are not exposed');
+
+    const post = body => authed(base, '/admin/api/deliveries/retry', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    assert.equal((await post({ messageId, chatId: 'bad' })).status, 400);
+    assert.equal((await post({ messageId: 'x', chatId: '1@g.us' })).status, 400);
+    assert.equal((await post({ messageId: 'gmail:unknown-1', chatId: '1@g.us' })).status, 404);
+
+    const retried = await post({ messageId, chatId: '1@g.us' });
+    assert.equal(retried.status, 200);
+    assert.equal((await retried.json()).requeued, true);
+    assert.equal((await post({ messageId, chatId: '1@g.us' })).status, 409, 'already back in the queue');
+
+    const unauthenticated = await fetch(`${base}/admin/api/deliveries/retry`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageId, chatId: '1@g.us' })
+    });
+    assert.equal(unauthenticated.status, 401);
+});
+
+test('reports an expired PDF when a dead letter can no longer be retried', async () => {
+    const { base, store } = await withRouting();
+    const messageId = 'gmail:admin-retry-expired';
+    const claim = await store.beginDelivery({ messageId, routeId: 'r1', chatId: '1@g.us' });
+    await store.failDelivery(messageId, '1@g.us', 'gave up', { claimToken: claim.claimToken, maxAttempts: 1 });
+    const listed = (await (await authed(base, '/admin/api/deliveries')).json()).deliveries[0];
+    assert.equal(listed.canRetry, false);
+    const response = await authed(base, '/admin/api/deliveries/retry', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageId, chatId: '1@g.us' })
+    });
+    assert.equal(response.status, 410);
+});
