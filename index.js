@@ -3,13 +3,14 @@ require('./logRedaction').installLogRedaction();
 require('dotenv').config();
 const qrcode = require('qrcode-terminal');
 const { convertPdfToPngPages } = require('./pdfProcessor');
+const { createDeadLetterNotifier } = require('./deliveryAlerts');
 const { startServer } = require('./server');
 const { handleStudioCommand } = require('./studioCommands');
 const { StudioEmailService } = require('./studioEmailService');
 const { StudioDeliveryWorker } = require('./studioDeliveryWorker');
 const { StudioRouteService } = require('./studioRouting');
 const { MongoStudioStore } = require('./studioStore');
-const { parseCsvSet } = require('./validation');
+const { isValidWhatsAppChatId, parseCsvSet } = require('./validation');
 const { WhatsAppClient, normalizeJid } = require('./whatsappClient');
 
 const DEFAULT_STUDIO_ALLOWED_SENDERS = 'data-studio-noreply@google.com';
@@ -65,6 +66,18 @@ async function main() {
             routingEmail: process.env.STUDIO_ROUTING_EMAIL,
             pepper: process.env.STUDIO_ROUTE_PEPPER
         });
+        const alertChatId = String(process.env.STUDIO_ALERT_CHAT_ID || '').trim();
+        if (alertChatId && !isValidWhatsAppChatId(alertChatId)) {
+            console.warn('STUDIO_ALERT_CHAT_ID is not a valid WhatsApp chat ID; dead-letter alerts will only be logged.');
+        }
+        const onDeadLetter = createDeadLetterNotifier({
+            client,
+            alertChatId: isValidWhatsAppChatId(alertChatId) ? alertChatId : null,
+            isClientReady: () => whatsappReady
+        });
+        console.log(isValidWhatsAppChatId(alertChatId)
+            ? 'Dead-letter alerts will be sent to the configured WhatsApp chat.'
+            : 'Dead-letter alerts are logged only (set STUDIO_ALERT_CHAT_ID to receive them on WhatsApp).');
         const configuredSenders = parseCsvSet(process.env.STUDIO_ALLOWED_SENDERS);
         const allowedSenders = configuredSenders.size
             ? configuredSenders
@@ -75,7 +88,8 @@ async function main() {
             client,
             isClientReady: () => whatsappReady,
             convertPdf: convertPdfToPngPages,
-            allowedSenders
+            allowedSenders,
+            onDeadLetter
         });
         console.log(`Looker Studio email routing is enabled with ${allowedSenders.size} approved sender(s).`);
 
@@ -88,7 +102,8 @@ async function main() {
             store: studioStore,
             client,
             isClientReady: () => whatsappReady,
-            convertPdf: convertPdfToPngPages
+            convertPdf: convertPdfToPngPages,
+            onDeadLetter
         });
         deliveryWorker.start();
         console.log(`Studio delivery retry worker started (max ${deliveryWorker.maxAttempts} attempts, checking every ${Math.round(deliveryWorker.intervalMs / 1000)}s).`);
