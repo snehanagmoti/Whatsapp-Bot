@@ -12,6 +12,19 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Throwaway CI database server for test/mongo-integration.test.js.
+      MONGODB_TEST_URI: mongodb://localhost:27017
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
