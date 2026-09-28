@@ -140,7 +140,8 @@ test('failed deliveries honour their backoff window, refunds and dead-lettering'
     await store.failDelivery(request.messageId, request.chatId, 'send failed again', { claimToken: retried.claimToken, maxAttempts: 2 });
     record = await store.deliveries.findOne({ _id: key });
     assert.equal(record.status, 'dead_letter');
-    assert.equal(record.pdfData, undefined);
+    assert.ok(Buffer.isBuffer(record.pdfData), 'dead letters keep their PDF for an operator retry');
+    assert.ok(record.deadLetteredAt instanceof Date);
     assert.deepEqual(await store.beginDelivery(request), { status: 'dead_letter', error: 'send failed again' });
 });
 
@@ -272,4 +273,61 @@ test('Signal keys are read and written in batches on a real server', { skip }, a
     await auth.state.keys.set({ session: { 'contact-0.0': null, 'contact-1.0': null }, 'pre-key': { 1: null } });
     assert.equal(Object.keys(await auth.state.keys.get('session', ids)).length, 48);
     assert.deepEqual(await auth.state.keys.get('pre-key', ['1']), {});
+});
+
+
+test('shared PDFs, requeue and dead-letter retention on a real server', { skip }, async () => {
+    let clock = new Date('2026-09-20T00:00:00.000Z');
+    const store = await openStore({ now: () => clock });
+    const messageId = 'gmail:it-shared-pdf';
+    const pdfRef = await store.savePdf(messageId, pdf);
+    assert.equal(await store.savePdf(messageId, pdf), pdfRef, 'saving twice keeps one copy');
+    assert.equal(await store.pdfs.countDocuments({}), 1);
+    assert.ok((await store.loadPdf(pdfRef)).equals(pdf));
+
+    const sales = await store.beginDelivery({ messageId, routeId: 'r1', chatId: '111@g.us', pdfRef });
+    const ops = await store.beginDelivery({ messageId, routeId: 'r2', chatId: '222@g.us', pdfRef });
+    const opsKey = deliveryKey(messageId, '222@g.us');
+    assert.equal((await store.deliveries.findOne({ _id: opsKey })).pdfRef, pdfRef);
+
+    assert.equal(await store.completeDelivery(messageId, '111@g.us', { claimToken: sales.claimToken }), true);
+    assert.equal(await store.pdfs.countDocuments({ _id: pdfRef }), 1, 'still needed by the other destination');
+    assert.equal(await store.failDelivery(messageId, '222@g.us', 'gave up', { claimToken: ops.claimToken, maxAttempts: 1 }), 'dead_letter');
+
+    const [listed] = await store.listRecentDeliveries({ chatId: '222@g.us' });
+    assert.equal(listed.pdfRef, pdfRef, 'listings expose the reference, never the bytes');
+    assert.equal(listed.pdfData, undefined);
+
+    const retried = await store.loadDeliveryPdf(await store.deliveries.findOne({ _id: opsKey }));
+    assert.ok(Buffer.isBuffer(retried) && retried.equals(pdf));
+
+    assert.deepEqual(await store.requeueDelivery(messageId, '222@g.us'), { status: 'requeued' });
+    const claimed = await store.claimRetryableDelivery({ maxAttempts: 1 });
+    assert.equal(claimed.chatId, '222@g.us');
+    assert.equal(await store.completeDelivery(messageId, '222@g.us', { claimToken: claimed.claimToken }), true);
+    assert.equal(await store.pdfs.countDocuments({ _id: pdfRef }), 0, 'released after the last destination delivered');
+
+    // Retention: a dead letter's PDF goes after the configured window.
+    const second = 'gmail:it-retention';
+    const ref2 = await store.savePdf(second, pdf);
+    const claim2 = await store.beginDelivery({ messageId: second, routeId: 'r1', chatId: '111@g.us', pdfRef: ref2 });
+    await store.failDelivery(second, '111@g.us', 'gave up', { claimToken: claim2.claimToken, maxAttempts: 1 });
+    clock = new Date(clock.getTime() + 8 * 24 * 60 * 60 * 1000);
+    assert.equal(await store.releaseExpiredDeadLetterPdfs(), 1);
+    assert.equal(await store.pdfs.countDocuments({ _id: ref2 }), 0);
+    assert.deepEqual(await store.requeueDelivery(second, '111@g.us'), { status: 'pdf_missing' });
+});
+
+test('abandoned leases at the attempt cap are swept and reported', { skip }, async () => {
+    let clock = new Date('2026-09-20T00:00:00.000Z');
+    const store = await openStore({ deliveryLeaseMs: 1000, now: () => clock });
+    const ref = await store.savePdf('gmail:it-sweep-report', pdf);
+    await store.beginDelivery({ messageId: 'gmail:it-sweep-report', routeId: 'r1', chatId: '111@g.us', pdfRef: ref });
+    clock = new Date(clock.getTime() + 5000);
+    const swept = await store.sweepAbandonedDeliveries({ maxAttempts: 1 });
+    assert.equal(swept.length, 1);
+    assert.equal(swept[0].chatId, '111@g.us');
+    assert.equal(swept[0].pdfData, undefined);
+    assert.equal((await store.deliveries.findOne({ _id: deliveryKey('gmail:it-sweep-report', '111@g.us') })).status, 'dead_letter');
+    assert.deepEqual(await store.sweepAbandonedDeliveries({ maxAttempts: 1 }), []);
 });

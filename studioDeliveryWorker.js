@@ -33,6 +33,7 @@ class StudioDeliveryWorker {
         retryBaseMs = Number(process.env.STUDIO_DELIVERY_RETRY_BASE_MS) || DEFAULT_DELIVERY_RETRY_BASE_MS,
         intervalMs = process.env.STUDIO_DELIVERY_WORKER_INTERVAL_MS,
         maxClaimsPerTick = DEFAULT_MAX_CLAIMS_PER_TICK,
+        onDeadLetter = null,
         log = console
     } = {}) {
         if (!store || !client || !convertPdf) throw new Error('Studio delivery worker dependencies are required.');
@@ -45,6 +46,7 @@ class StudioDeliveryWorker {
         this.intervalMs = normalizeIntervalMs(intervalMs);
         this.maxClaimsPerTick = maxClaimsPerTick;
         this.log = log;
+        this.onDeadLetter = onDeadLetter;
         this.timer = null;
         this.ticking = false;
     }
@@ -66,7 +68,16 @@ class StudioDeliveryWorker {
         if (this.ticking) return;
         this.ticking = true;
         try {
+            // Housekeeping runs even while WhatsApp is disconnected.
+            if (typeof this.store.releaseExpiredDeadLetterPdfs === 'function') {
+                await this.store.releaseExpiredDeadLetterPdfs().catch(error =>
+                    this.log.error('Could not release expired dead-letter PDFs:', error.message || error));
+            }
             if (!this.isClientReady()) return;
+            if (typeof this.store.sweepAbandonedDeliveries === 'function') {
+                const swept = await this.store.sweepAbandonedDeliveries({ maxAttempts: this.maxAttempts });
+                for (const delivery of swept) await this.notifyDeadLetter(delivery, delivery.error);
+            }
             for (let claimCount = 0; claimCount < this.maxClaimsPerTick; claimCount += 1) {
                 const claimed = await this.store.claimRetryableDelivery({
                     maxAttempts: this.maxAttempts,
@@ -80,16 +91,29 @@ class StudioDeliveryWorker {
         }
     }
 
+    async notifyDeadLetter(delivery, error) {
+        if (typeof this.onDeadLetter !== 'function') return;
+        try {
+            const route = delivery.routeId ? await this.store.getRouteById(delivery.routeId).catch(() => null) : null;
+            await this.onDeadLetter({ ...delivery, routeName: route ? route.name : null, error: error || delivery.error });
+        } catch (alertError) {
+            this.log.error('Dead-letter alert failed:', alertError.message || alertError);
+        }
+    }
+
     async processClaimed(delivery) {
-        const { messageId, chatId, claimToken, routeId, subject, pdfData } = delivery;
+        const { messageId, chatId, claimToken, routeId, subject } = delivery;
         const nextPage = Number.isSafeInteger(delivery.deliveredPages) && delivery.deliveredPages >= 0
             ? delivery.deliveredPages
             : 0;
         try {
-            if (!pdfData) throw new Error('No stored PDF is available to retry this delivery.');
+            const pdf = typeof this.store.loadDeliveryPdf === 'function'
+                ? await this.store.loadDeliveryPdf(delivery)
+                : delivery.pdfData;
+            if (!pdf) throw new Error('No stored PDF is available to retry this delivery.');
             const route = await this.store.getRouteById(routeId);
             if (!route) throw new Error('The report route for this delivery no longer exists.');
-            const pages = await this.convertPdf(pdfData);
+            const pages = await this.convertPdf(pdf);
             if (typeof this.store.renewDeliveryLease === 'function') {
                 assertClaimOwnership(await this.store.renewDeliveryLease(messageId, chatId, claimToken));
             }
@@ -106,11 +130,12 @@ class StudioDeliveryWorker {
         } catch (error) {
             // Readiness is checked before claiming, but WhatsApp can still drop
             // mid-send. Such an interruption does not consume an attempt.
-            await this.store.failDelivery(messageId, chatId, error.message || error, {
+            const outcome = await this.store.failDelivery(messageId, chatId, error.message || error, {
                 claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
                 countAttempt: Boolean(this.isClientReady())
             });
             this.log.warn(`Studio delivery worker: retry failed for ${chatId} (message ${messageId}): ${error.message || error}`);
+            if (outcome === 'dead_letter') await this.notifyDeadLetter(delivery, error.message || String(error));
         }
     }
 }
