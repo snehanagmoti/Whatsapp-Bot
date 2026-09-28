@@ -20,9 +20,12 @@ function runBridge({
     maxRuntimeSeconds = null,
     clock = null,
     onFetch = null,
-    attachmentError = null
+    attachmentError = null,
+    keepAwake = undefined,
+    pingError = null
 } = {}) {
     const requests = [];
+    const pings = [];
     const logs = [];
     const searchCalls = [];
     const labelsApplied = [];
@@ -32,6 +35,7 @@ function runBridge({
         ROUTING_MAILBOX: 'reports@example.com',
         FORWARD_MAX_THREADS_PER_RUN: String(maxThreads),
         ...(maxRuntimeSeconds ? { FORWARD_MAX_RUNTIME_SECONDS: String(maxRuntimeSeconds) } : {}),
+        ...(keepAwake !== undefined ? { KEEP_SERVICE_AWAKE: keepAwake } : {}),
         PROCESSED_MESSAGE_IDS: JSON.stringify(processedIds)
     };
     if (includeCutover) values.FORWARD_NOT_BEFORE = '2026-09-10T00:00:00.000Z';
@@ -81,6 +85,11 @@ function runBridge({
         },
         Utilities: { base64Encode: bytes => Buffer.from(bytes).toString('base64') },
         UrlFetchApp: { fetch: (url, options) => {
+            if (/\/healthz$/.test(url)) {
+                pings.push({ url, options });
+                if (pingError) throw pingError;
+                return { getResponseCode: () => 200, getContentText: () => '{}' };
+            }
             if (fetchError) throw fetchError;
             requests.push({ url, options });
             if (onFetch) onFetch({ values, requestCount: requests.length });
@@ -103,7 +112,7 @@ function runBridge({
         .flatMap(key => JSON.parse(values[key]));
     const summaryArgs = logs.find(args => String(args[0]).includes('summary'));
     const summary = summaryArgs ? JSON.parse(summaryArgs[2]) : null;
-    return { requests, searchCalls, labelsApplied, values, ledger, logs, summary, runError };
+    return { requests, pings, searchCalls, labelsApplied, values, ledger, logs, summary, runError };
 }
 
 test('Apps Script bridge forwards matching To/Cc aliases with bearer authentication', () => {
@@ -157,7 +166,7 @@ test('Apps Script bridge ignores unrelated and already processed messages', () =
     const unrelated = runBridge({ recipient: 'someone@example.com' });
     assert.equal(unrelated.requests.length, 0);
     const summary = unrelated.logs.find(args => args[0].includes('summary'));
-    assert.equal(summary[1], '1.2.0');
+    assert.equal(summary[1], '1.3.0');
     assert.equal(JSON.parse(summary[2]).unrelated, 1);
     const lookalike = runBridge({ recipient: 'reports+abcdef0123456789abcdef01@evil.example.com, x@example.com' });
     assert.equal(lookalike.requests.length, 0);
@@ -229,4 +238,27 @@ test('Apps Script bridge validates the runtime budget property', () => {
     const result = runBridge({ maxRuntimeSeconds: 900 });
     assert.match(String(result.runError && result.runError.message), /FORWARD_MAX_RUNTIME_SECONDS/);
     assert.equal(result.requests.length, 0);
+});
+
+
+test('Apps Script bridge pings /healthz each run to keep the free service awake', () => {
+    const result = runBridge({ recipient: 'someone@example.com' });
+    assert.equal(result.pings.length, 1);
+    assert.equal(result.pings[0].url, 'https://bot.example.com/healthz');
+    assert.equal(result.pings[0].options.method, 'get');
+    assert.equal(result.summary.keepAwake, 200);
+});
+
+test('Apps Script bridge keep-awake can be disabled and never blocks forwarding', () => {
+    const disabled = runBridge({ keepAwake: 'false' });
+    assert.equal(disabled.pings.length, 0);
+    assert.equal(disabled.requests.length, 1);
+
+    const failingPing = runBridge({ pingError: new Error('service asleep') });
+    assert.equal(failingPing.pings.length, 1);
+    assert.equal(failingPing.summary.keepAwake, 'error');
+    assert.equal(failingPing.requests.length, 1, 'the report is still forwarded');
+
+    const invalid = runBridge({ keepAwake: 'sometimes' });
+    assert.match(String(invalid.runError && invalid.runError.message), /KEEP_SERVICE_AWAKE/);
 });

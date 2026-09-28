@@ -9,6 +9,15 @@
  *   FORWARD_MAX_THREADS_PER_RUN 50-2000 (default: 500)
  *   FORWARD_LOOKBACK_DAYS       1-30 (default: 7)
  *   FORWARD_MAX_RUNTIME_SECONDS 60-330 (default: 270)
+ *   KEEP_SERVICE_AWAKE          true/false (default: true)
+ *
+ * Render's free tier puts the bot to sleep after 15 minutes without incoming
+ * HTTP requests, which also pauses its delivery-retry worker and WhatsApp
+ * connection. With KEEP_SERVICE_AWAKE enabled, every run (every 5 minutes)
+ * sends a lightweight GET to the bot's /healthz endpoint so it stays awake.
+ * An always-on service runs up to 744 instance hours in a 31-day month;
+ * check that this fits your Render workspace's current free-hour allowance,
+ * and set KEEP_SERVICE_AWAKE to false if it does not.
  *
  * Apps Script stops an execution after six minutes without running `finally`
  * blocks. The forwarder therefore stops starting new messages once its runtime
@@ -21,7 +30,7 @@
  */
 
 var REPORT_FORWARDER_CONFIG = {
-  version: '1.2.0',
+  version: '1.3.0',
   successLabel: 'Looker Report Bot/Forwarded',
   terminalLabel: 'Looker Report Bot/Rejected',
   ledgerPrefix: 'PROCESSED_MESSAGE_IDS_',
@@ -77,6 +86,7 @@ function forwardUnreadReports() {
     properties = PropertiesService.getScriptProperties();
     var config = readForwarderConfig_(properties);
     var deadline = startedAt + config.maxRuntimeSeconds * 1000;
+    if (config.keepAwake) stats.keepAwake = pingService_(config.ingestUrl);
     var cutover = ensureForwardNotBefore_(properties);
 
     // A direct first run (without running the installer) establishes a safe
@@ -216,14 +226,36 @@ function readForwarderConfig_(properties) {
   if (!Number.isInteger(maxRuntimeSeconds) || maxRuntimeSeconds < 60 || maxRuntimeSeconds > 330) {
     throw new Error('FORWARD_MAX_RUNTIME_SECONDS must be an integer from 60 to 330.');
   }
+  var keepAwakeValue = String(properties.getProperty('KEEP_SERVICE_AWAKE') || 'true').trim().toLowerCase();
+  if (keepAwakeValue !== 'true' && keepAwakeValue !== 'false') {
+    throw new Error('KEEP_SERVICE_AWAKE must be true or false.');
+  }
   return {
     ingestUrl: ingestUrl,
     ingestToken: ingestToken,
     mailbox: mailbox,
     maxThreads: maxThreads,
     lookbackDays: lookbackDays,
-    maxRuntimeSeconds: maxRuntimeSeconds
+    maxRuntimeSeconds: maxRuntimeSeconds,
+    keepAwake: keepAwakeValue === 'true'
   };
+}
+
+// Returns the HTTP status of the bot's health check, or 'error'. A failed
+// ping never stops forwarding: a sleeping service simply wakes on the next
+// request.
+function pingService_(ingestUrl) {
+  try {
+    var response = UrlFetchApp.fetch(ingestUrl.replace(/\/$/, '') + '/healthz', {
+      method: 'get',
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    return response.getResponseCode();
+  } catch (error) {
+    console.warn('Keep-awake ping failed: %s', error && error.message ? error.message : error);
+    return 'error';
+  }
 }
 
 function ensureForwardNotBefore_(properties) {
