@@ -6,6 +6,8 @@ const DEFAULT_MAX_DELIVERY_ATTEMPTS = 6;
 const DEFAULT_DELIVERY_RETRY_BASE_MS = 60 * 1000;
 const MAX_DELIVERY_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 
+const LISTING_EXCLUDED_FIELDS = Object.freeze({ pdfData: 0, claimToken: 0 });
+
 function normalizeRouteName(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -212,7 +214,11 @@ class MongoStudioStore {
 
     listRecentDeliveries({ chatId, limit = 50 } = {}) {
         const filter = chatId ? { chatId } : {};
-        return this.deliveries.find(filter).sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
+        // Pending and failed deliveries carry their source PDF (up to the
+        // configured PDF size each). Exclude it in the query so a listing never
+        // pulls those blobs from MongoDB just to discard them.
+        return this.deliveries.find(filter, { projection: LISTING_EXCLUDED_FIELDS })
+            .sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {
@@ -455,7 +461,8 @@ class MemoryStudioStore {
         return [...this.deliveries.values()]
             .filter(delivery => !chatId || delivery.chatId === chatId)
             .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0))
-            .slice(0, normalizeListLimit(limit));
+            .slice(0, normalizeListLimit(limit))
+            .map(({ pdfData, claimToken, ...listed }) => listed);
     }
 
     async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {

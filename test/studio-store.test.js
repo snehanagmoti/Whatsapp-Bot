@@ -188,3 +188,20 @@ test('a failure recorded with countAttempt:false refunds the attempt and never d
     assert.equal(record.attempts, 0);
     assert.equal(record.nextAttemptAt.getTime(), clock.getTime());
 });
+
+test('delivery listings never load stored PDFs or claim tokens', async () => {
+    const store = new MongoStudioStore({ uri: 'mongodb://127.0.0.1:27017' });
+    let captured = null;
+    const cursor = { sort() { return this; }, limit() { return this; }, toArray: async () => [] };
+    store.deliveries = { find: (filter, options) => { captured = { filter, options }; return cursor; } };
+    await store.listRecentDeliveries({ chatId: '123@g.us', limit: 20 });
+    assert.deepEqual(captured.filter, { chatId: '123@g.us' });
+    assert.deepEqual({ ...captured.options.projection }, { pdfData: 0, claimToken: 0 });
+
+    const memory = new MemoryStudioStore();
+    await memory.beginDelivery({ messageId: 'gmail:list123', routeId: 'r1', chatId: '123@g.us', pdf: Buffer.from('%PDF-') });
+    const [listed] = await memory.listRecentDeliveries();
+    assert.equal(listed.pdfData, undefined);
+    assert.equal(listed.claimToken, undefined);
+    assert.ok(memory.deliveries.get(deliveryKey('gmail:list123', '123@g.us')).pdfData, 'the stored record keeps its PDF');
+});
