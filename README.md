@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.3.1** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.4.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,18 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.4.0 changes
+
+WhatsApp-side hardening and efficiency. No data migration; existing sessions, routes and delivery records keep working without re-linking.
+
+- **Signal key material is kept out of logs.** libsignal (inside Baileys) logged full session objects, including ratchet private keys, on routine events such as "Closing session". `logRedaction.js` is installed before anything else runs: it drops that routine chatter and redacts any logged object carrying Signal/WhatsApp key material. `WA_SIGNAL_DEBUG=true` restores the routine messages (still redacted).
+- **Faster key store.** Signal keys are read with one `$in` query and written with one bulk write per update instead of one database round-trip per key, and the store is wrapped with Baileys' write-through key cache.
+- **Group metadata cache.** Participant lists needed to encrypt group sends are cached for five minutes, invalidated whenever WhatsApp reports a group or membership change, and shared with admin checks.
+- **Re-send support across reconnects.** Sent messages are kept for 24 hours (1,000 at most) so a recipient that asks for a page to be re-sent can still be answered after the socket reconnects.
+- **LID identities.** `...@lid` chat IDs and legacy `123-456@g.us` group IDs are accepted by the admin API and Looker action, and route-management checks match a sender's phone-number JID or LID.
+- Report pages are passed to WhatsApp as buffers, avoiding a base64 round-trip per page.
+- 126 unit tests and 9 MongoDB integration tests.
 
 ## Release 1.3.1 changes
 
@@ -131,7 +143,7 @@ Every claimed delivery keeps its own copy of the source PDF until it either deli
 
 ## Verification and release status
 
-The local release suite passed **109 unit tests with no failures**; the 8 MongoDB integration tests are skipped unless `MONGODB_TEST_URI` is set (CI runs them against `mongo:7`). Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
+The local release suite passed **126 unit tests with no failures**; the 9 MongoDB integration tests are skipped unless `MONGODB_TEST_URI` is set (CI runs them against `mongo:7`). Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
 
 Run with Node.js 22-24 and Poppler (`pdfinfo` and `pdftoppm`) installed:
 
