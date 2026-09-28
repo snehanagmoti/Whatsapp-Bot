@@ -1,12 +1,36 @@
 const { EventEmitter } = require('events');
 const pino = require('pino');
 const { createMongoAuthState } = require('./baileysAuthStore');
+const { TtlCache } = require('./ttlCache');
 
 const DEFAULT_MESSAGE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MESSAGE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
 const DEFAULT_SEEN_MESSAGE_LIMIT = 5000;
 const DEFAULT_RECONNECT_BASE_MS = 3000;
 const DEFAULT_RECONNECT_MAX_MS = 60000;
+const DEFAULT_GROUP_METADATA_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_GROUP_METADATA_LIMIT = 500;
+const DEFAULT_SENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SENT_MESSAGE_LIMIT = 1000;
+
+// Baileys v7 may identify a person by phone-number JID (…@s.whatsapp.net) or
+// by LID (…@lid), optionally with a device suffix (…:12@…). Compare people by
+// their device-less JID.
+function normalizeJid(jid) {
+    const value = String(jid || '').trim().toLowerCase();
+    const at = value.lastIndexOf('@');
+    if (at <= 0) return value;
+    const user = value.slice(0, at).split(':')[0];
+    const server = value.slice(at + 1) === 'c.us' ? 's.whatsapp.net' : value.slice(at + 1);
+    return `${user}@${server}`;
+}
+
+function sameIdentity(candidates, participant) {
+    const wanted = new Set(candidates.filter(Boolean).map(normalizeJid));
+    return [participant.id, participant.phoneNumber, participant.lid, participant.jid]
+        .filter(Boolean)
+        .some(jid => wanted.has(normalizeJid(jid)));
+}
 
 function unwrapMessage(message) {
     let current = message;
@@ -74,7 +98,10 @@ class WhatsAppClient extends EventEmitter {
         reconnectMaxMs = DEFAULT_RECONNECT_MAX_MS,
         messageMaxAgeMs = finitePositive(process.env.WA_COMMAND_MAX_AGE_MS, DEFAULT_MESSAGE_MAX_AGE_MS),
         messageFutureToleranceMs = DEFAULT_MESSAGE_FUTURE_TOLERANCE_MS,
-        seenMessageLimit = DEFAULT_SEEN_MESSAGE_LIMIT
+        seenMessageLimit = DEFAULT_SEEN_MESSAGE_LIMIT,
+        groupMetadataTtlMs = DEFAULT_GROUP_METADATA_TTL_MS,
+        sentMessageTtlMs = DEFAULT_SENT_MESSAGE_TTL_MS,
+        sentMessageLimit = DEFAULT_SENT_MESSAGE_LIMIT
     } = {}) {
         super();
         this.mongoUri = mongoUri;
@@ -105,6 +132,20 @@ class WhatsAppClient extends EventEmitter {
         this.saveChain = Promise.resolve();
         this.messageChain = Promise.resolve();
         this.logoutRecovery = null;
+        // Group participant lists are needed to encrypt every group send.
+        // Serving them from a short-lived cache (invalidated on group change
+        // events) avoids a metadata query per report page.
+        this.groupMetadata = new TtlCache({
+            max: DEFAULT_GROUP_METADATA_LIMIT, ttlMs: finitePositive(groupMetadataTtlMs, DEFAULT_GROUP_METADATA_TTL_MS), now
+        });
+        // Baileys keeps its own resend cache for five minutes per socket. This
+        // cache survives reconnects so a recipient that asks for a re-send
+        // later (it could not decrypt a page) can still be answered.
+        this.sentMessages = new TtlCache({
+            max: finitePositive(sentMessageLimit, DEFAULT_SENT_MESSAGE_LIMIT),
+            ttlMs: finitePositive(sentMessageTtlMs, DEFAULT_SENT_MESSAGE_TTL_MS),
+            now
+        });
     }
 
     async initialize() {
@@ -227,8 +268,13 @@ class WhatsAppClient extends EventEmitter {
         const { DisconnectReason } = this.baileys;
         const logger = pino({ level: process.env.WA_LOG_LEVEL || 'silent' });
 
+        const keys = typeof this.baileys.makeCacheableSignalKeyStore === 'function'
+            ? this.baileys.makeCacheableSignalKeyStore(this.authStore.state.keys, logger)
+            : this.authStore.state.keys;
         const socket = makeWASocket({
-            auth: this.authStore.state,
+            // creds is the same object the auth store saves; only the key
+            // store gets Baileys' in-memory read/write-through cache.
+            auth: { creds: this.authStore.state.creds, keys },
             logger,
             syncFullHistory: false,
             shouldSyncHistoryMessage: () => false,
@@ -242,7 +288,8 @@ class WhatsAppClient extends EventEmitter {
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 20000,
-            getMessage: async () => undefined
+            getMessage: async key => this.sentMessages.get(String(key?.id || '')),
+            cachedGroupMetadata: async jid => this.groupMetadata.get(jid)
         });
         this.socket = socket;
 
@@ -306,7 +353,10 @@ class WhatsAppClient extends EventEmitter {
                     fromMe: Boolean(message.key.fromMe),
                     from: chatId,
                     to: chatId,
-                    senderId: message.key?.participant || message.key?.remoteJid
+                    senderId: message.key?.participant || message.key?.remoteJid,
+                    // The same person under their other identity (LID vs phone
+                    // number), when WhatsApp supplies it.
+                    senderAltId: message.key?.participantAlt || message.key?.remoteJidAlt || null
                 };
 
                 // MongoDB keeps the replay guard across process restarts. The
@@ -330,36 +380,68 @@ class WhatsAppClient extends EventEmitter {
             }
         };
 
+        const forgetGroups = updates => {
+            if (generation !== this.generation) return;
+            for (const update of [].concat(updates || [])) {
+                if (update && update.id) this.groupMetadata.delete(update.id);
+            }
+        };
+
         const handlers = [
             ['creds.update', onCredsUpdate],
             ['connection.update', onConnectionUpdate],
-            ['messages.upsert', onMessagesUpsert]
+            ['messages.upsert', onMessagesUpsert],
+            ['groups.update', forgetGroups],
+            ['groups.upsert', forgetGroups],
+            ['group-participants.update', forgetGroups]
         ];
         handlers.forEach(([event, handler]) => socket.ev.on(event, handler));
         this.socketListeners = { emitter: socket.ev, handlers };
     }
 
-    async isGroupAdmin(chatId, senderId) {
-        if (!this.ready || !this.socket || !chatId.endsWith('@g.us') || !senderId) return false;
+    async groupMetadataFor(chatId) {
+        const cached = this.groupMetadata.get(chatId);
+        if (cached) return cached;
         const metadata = await this.socket.groupMetadata(chatId);
-        const participant = (metadata.participants || []).find(item => item.id === senderId || item.phoneNumber === senderId);
+        if (metadata) this.groupMetadata.set(chatId, metadata);
+        return metadata;
+    }
+
+    // `senderIds` may list one person under several identities (LID and
+    // phone-number JID); any match counts.
+    async isGroupAdmin(chatId, senderIds) {
+        const candidates = [].concat(senderIds || []).filter(Boolean);
+        if (!this.ready || !this.socket || !chatId.endsWith('@g.us') || !candidates.length) return false;
+        const metadata = await this.groupMetadataFor(chatId);
+        const participant = ((metadata && metadata.participants) || []).find(item => sameIdentity(candidates, item));
         return Boolean(participant && (participant.admin === 'admin' || participant.admin === 'superadmin'));
+    }
+
+    rememberSent(result) {
+        const id = result && result.key && result.key.id;
+        if (id && result.message) this.sentMessages.set(String(id), result.message);
+        return result;
     }
 
     async sendMessage(chatId, content, options = {}) {
         if (!this.ready || !this.socket) throw new Error('WhatsApp is not connected.');
-        if (typeof content === 'string') {
-            return this.socket.sendMessage(chatId, { text: content });
+        if (chatId.endsWith('@g.us') && !this.groupMetadata.get(chatId)) {
+            // Warm the cache Baileys reads through cachedGroupMetadata. On
+            // failure Baileys simply fetches the metadata itself.
+            await this.groupMetadataFor(chatId).catch(() => {});
         }
-        if (content && content.mimetype && content.data) {
-            return this.socket.sendMessage(chatId, {
-                image: Buffer.from(content.data, 'base64'),
+        if (typeof content === 'string') {
+            return this.rememberSent(await this.socket.sendMessage(chatId, { text: content }));
+        }
+        if (content && content.mimetype && (content.buffer || content.data)) {
+            return this.rememberSent(await this.socket.sendMessage(chatId, {
+                image: Buffer.isBuffer(content.buffer) ? content.buffer : Buffer.from(content.data, 'base64'),
                 mimetype: content.mimetype,
                 fileName: content.filename,
                 caption: options.caption || ''
-            });
+            }));
         }
-        return this.socket.sendMessage(chatId, content);
+        return this.rememberSent(await this.socket.sendMessage(chatId, content));
     }
 
     async destroy() {
@@ -378,6 +460,7 @@ class WhatsAppClient extends EventEmitter {
 
 module.exports = {
     WhatsAppClient,
+    normalizeJid,
     messageIdentity,
     messageText,
     messageTimestampMs,

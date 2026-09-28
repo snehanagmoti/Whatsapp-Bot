@@ -9,7 +9,7 @@ const {
     shouldProcessMessageUpsert
 } = require('../whatsappClient');
 
-function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage, authOverrides = {} } = {}) {
+function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage, authOverrides = {}, groupMetadata, baileysExtras = {}, clock } = {}) {
     const sockets = [];
     const timers = [];
     const clearedTimers = [];
@@ -23,25 +23,35 @@ function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage, au
     };
     if (claimMessage) authStore.claimMessage = claimMessage;
     const baileys = {
-        default: () => {
+        default: config => {
             const socket = {
+                config,
                 ev: new EventEmitter(),
                 ended: false,
+                sent: [],
+                metadataCalls: 0,
                 end: () => { socket.ended = true; },
-                sendMessage: async () => ({}),
-                groupMetadata: async () => ({ participants: [] })
+                sendMessage: async (jid, content) => {
+                    socket.sent.push([jid, content]);
+                    return { key: { id: `sent-${socket.sent.length}-${sockets.length}`, remoteJid: jid }, message: { conversation: 'proto' } };
+                },
+                groupMetadata: async jid => {
+                    socket.metadataCalls += 1;
+                    return groupMetadata ? groupMetadata(jid) : { id: jid, participants: [] };
+                }
             };
             sockets.push(socket);
             return socket;
         },
         DisconnectReason: { loggedOut: 401 },
-        initAuthCreds: () => ({ registered: false, fresh: true })
+        initAuthCreds: () => ({ registered: false, fresh: true }),
+        ...baileysExtras
     };
     const client = new WhatsAppClient({
         mongoUri: 'mongodb://unused',
         baileysLoader: async () => baileys,
         authStateFactory: async () => authStore,
-        now: () => now,
+        now: () => (clock ? clock.now : now),
         random: () => random,
         setTimeoutFn: (callback, delay) => {
             const timer = { callback, delay };
@@ -256,4 +266,105 @@ test('destroying the client during logout recovery does not reconnect', async ()
     await destroyed;
     assert.equal(timers.length, 0);
     assert.equal(sockets.length, 1);
+});
+
+
+test('wraps the key store with Baileys caching and keeps the saved creds object', async () => {
+    const wrapped = [];
+    const { authStore, client, sockets } = createHarness({
+        baileysExtras: { makeCacheableSignalKeyStore: (keys, logger) => { wrapped.push(keys); return { cached: true, inner: keys }; } }
+    });
+    authStore.state.keys = { get: async () => ({}), set: async () => {} };
+    await client.initialize();
+    assert.equal(wrapped[0], authStore.state.keys);
+    assert.equal(sockets[0].config.auth.creds, authStore.state.creds, 'Baileys mutates the same creds object that is saved');
+    assert.equal(sockets[0].config.auth.keys.cached, true);
+});
+
+test('group sends reuse cached participant metadata until the group changes', async () => {
+    const { client, sockets } = createHarness({
+        groupMetadata: jid => ({ id: jid, participants: [{ id: '1@s.whatsapp.net' }] })
+    });
+    await client.initialize();
+    const socket = sockets[0];
+    socket.ev.emit('connection.update', { connection: 'open' });
+
+    await client.sendMessage('123@g.us', 'page 1');
+    await client.sendMessage('123@g.us', 'page 2');
+    assert.equal(socket.metadataCalls, 1);
+    assert.deepEqual(await socket.config.cachedGroupMetadata('123@g.us'), { id: '123@g.us', participants: [{ id: '1@s.whatsapp.net' }] });
+
+    socket.ev.emit('group-participants.update', { id: '123@g.us', participants: ['2@s.whatsapp.net'], action: 'add' });
+    assert.equal(await socket.config.cachedGroupMetadata('123@g.us'), undefined, 'membership change invalidates the cache');
+    await client.sendMessage('123@g.us', 'page 3');
+    assert.equal(socket.metadataCalls, 2);
+
+    socket.ev.emit('groups.update', [{ id: '123@g.us', subject: 'Renamed' }]);
+    assert.equal(await socket.config.cachedGroupMetadata('123@g.us'), undefined);
+});
+
+test('group metadata cache expires after its TTL', async () => {
+    const clock = { now: 1_800_000_000_000 };
+    const { client, sockets } = createHarness({ clock });
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', { connection: 'open' });
+    await client.sendMessage('123@g.us', 'first');
+    clock.now += 5 * 60 * 1000 + 1;
+    assert.equal(await sockets[0].config.cachedGroupMetadata('123@g.us'), undefined);
+});
+
+test('sent messages can be re-served to Baileys after a reconnect', async () => {
+    const { client, sockets, timers } = createHarness();
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', { connection: 'open' });
+    const sent = await client.sendMessage('456@s.whatsapp.net', 'report page');
+    sockets[0].ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 428 } } } });
+    await timers[0].callback();
+    assert.equal(sockets.length, 2);
+    assert.deepEqual(await sockets[1].config.getMessage({ remoteJid: '456@s.whatsapp.net', id: sent.key.id }), { conversation: 'proto' });
+    assert.equal(await sockets[1].config.getMessage({ remoteJid: '456@s.whatsapp.net', id: 'unknown' }), undefined);
+});
+
+test('image pages can be sent from a Buffer without a base64 round-trip', async () => {
+    const { client, sockets } = createHarness();
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', { connection: 'open' });
+    const page = Buffer.from('png-bytes');
+    await client.sendMessage('456@s.whatsapp.net', { mimetype: 'image/png', buffer: page, filename: 'p1.png' }, { caption: 'Sales' });
+    assert.equal(sockets[0].sent[0][1].image, page);
+    assert.equal(sockets[0].sent[0][1].caption, 'Sales');
+});
+
+test('group admin checks match LID and phone-number identities, ignoring device suffixes', async () => {
+    const { client, sockets } = createHarness({
+        groupMetadata: jid => ({
+            id: jid,
+            participants: [
+                { id: '111@lid', phoneNumber: '919800000001@s.whatsapp.net', admin: 'admin' },
+                { id: '222@lid', phoneNumber: '919800000002@s.whatsapp.net', admin: null },
+                { id: '919800000003@s.whatsapp.net', admin: 'superadmin' }
+            ]
+        })
+    });
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', { connection: 'open' });
+    assert.equal(await client.isGroupAdmin('123@g.us', '111@lid'), true);
+    assert.equal(await client.isGroupAdmin('123@g.us', ['999@lid', '919800000001@s.whatsapp.net']), true, 'matched through the alternate id');
+    assert.equal(await client.isGroupAdmin('123@g.us', '919800000003:7@s.whatsapp.net'), true, 'device suffix ignored');
+    assert.equal(await client.isGroupAdmin('123@g.us', '222@lid'), false);
+    assert.equal(await client.isGroupAdmin('123@g.us', []), false);
+    assert.equal(sockets[0].metadataCalls, 1, 'admin checks share the metadata cache');
+});
+
+test('command payloads carry the sender\'s alternate identity', async () => {
+    const events = [];
+    const { client, sockets } = createHarness();
+    client.on('message_create', payload => events.push(payload));
+    await client.initialize();
+    const message = commandMessage();
+    message.key.participant = '111@lid';
+    message.key.participantAlt = '919800000001@s.whatsapp.net';
+    sockets[0].ev.emit('messages.upsert', { type: 'notify', messages: [message] });
+    assert.equal(events[0].senderId, '111@lid');
+    assert.equal(events[0].senderAltId, '919800000001@s.whatsapp.net');
 });

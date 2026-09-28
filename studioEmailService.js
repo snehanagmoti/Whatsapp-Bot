@@ -62,7 +62,8 @@ async function sendPdfPages({ store, client, messageId, chatId, routeName, subje
         if (pages.length > 1) captionParts.push(`Page ${index + 1} of ${pages.length}`);
         await client.sendMessage(chatId, {
             mimetype: 'image/png',
-            data: pages[index].toString('base64'),
+            // Hand the rendered Buffer straight through; no base64 round-trip.
+            buffer: pages[index],
             filename: `studio-report-page-${index + 1}.png`
         }, { caption: captionParts.join(' — ').slice(0, 1024) });
         if (typeof store.recordDeliveryProgress === 'function') {
