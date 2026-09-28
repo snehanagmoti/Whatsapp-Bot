@@ -104,8 +104,11 @@ class StudioDeliveryWorker {
             }));
             this.log.log(`Studio delivery worker: retry succeeded for ${chatId} (message ${messageId}).`);
         } catch (error) {
+            // Readiness is checked before claiming, but WhatsApp can still drop
+            // mid-send. Such an interruption does not consume an attempt.
             await this.store.failDelivery(messageId, chatId, error.message || error, {
-                claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
+                countAttempt: Boolean(this.isClientReady())
             });
             this.log.warn(`Studio delivery worker: retry failed for ${chatId} (message ${messageId}): ${error.message || error}`);
         }

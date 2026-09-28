@@ -477,3 +477,20 @@ test('an upstream retry waits for the same backoff window as the background work
     assert.equal(sends.length, 2);
     assert.equal(record.attempts, 2);
 });
+
+test('a WhatsApp disconnect during an ingest send keeps the attempt budget intact', async () => {
+    let ready = true;
+    const { store, created, emailService } = await fixture({
+        maxAttempts: 1,
+        isClientReady: () => ready,
+        client: { sendMessage: async () => { ready = false; throw new Error('connection closed'); } }
+    });
+    const payload = {
+        messageId: 'gmail:ingest-outage123', from: 'approved@example.com', to: created.address,
+        attachments: [{ mimetype: 'application/pdf', data: pdf.toString('base64') }]
+    };
+    await assert.rejects(() => emailService.process(payload), error => error.statusCode === 502);
+    const record = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
+    assert.equal(record.status, 'failed', 'not dead-lettered despite maxAttempts: 1');
+    assert.equal(record.attempts, 0);
+});

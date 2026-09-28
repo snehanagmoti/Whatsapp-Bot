@@ -5,6 +5,10 @@ const DEFAULT_DELIVERY_LEASE_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_DELIVERY_ATTEMPTS = 6;
 const DEFAULT_DELIVERY_RETRY_BASE_MS = 60 * 1000;
 const MAX_DELIVERY_RETRY_BACKOFF_MS = 30 * 60 * 1000;
+// Upper bound on failures that may be recorded without consuming an attempt
+// (see failurePlan). Beyond it they count normally, so a delivery that keeps
+// being interrupted still reaches dead_letter eventually.
+const MAX_UNCOUNTED_FAILURES = 24;
 
 const LISTING_EXCLUDED_FIELDS = Object.freeze({ pdfData: 0, claimToken: 0 });
 
@@ -56,14 +60,15 @@ function computeRetryBackoffMs(attempts, retryBaseMs) {
 // failure that was not a real delivery attempt (for example releasing a claim
 // that never sent anything): the attempt is refunded and can never
 // dead-letter the delivery. `retryDelayMs` overrides the exponential backoff.
-function failurePlan(attempts, now, { maxAttempts, retryBaseMs, countAttempt = true, retryDelayMs } = {}) {
+function failurePlan(attempts, now, { maxAttempts, retryBaseMs, countAttempt = true, retryDelayMs } = {}, uncountedFailures = 0) {
     const used = Number(attempts || 0);
-    const exhausted = countAttempt && used >= normalizeMaxDeliveryAttempts(maxAttempts);
-    const refund = !countAttempt && used > 0;
+    const counted = countAttempt || Number(uncountedFailures || 0) >= MAX_UNCOUNTED_FAILURES;
+    const exhausted = counted && used >= normalizeMaxDeliveryAttempts(maxAttempts);
+    const refund = !counted && used > 0;
     const delayMs = Number.isFinite(retryDelayMs) && retryDelayMs >= 0
         ? Math.floor(retryDelayMs)
         : computeRetryBackoffMs(refund ? used - 1 : used, normalizeRetryBaseMs(retryBaseMs));
-    return { exhausted, refund, nextAttemptAt: new Date(now.getTime() + delayMs) };
+    return { exhausted, refund, uncounted: !counted, nextAttemptAt: new Date(now.getTime() + delayMs) };
 }
 
 function asDate(value) {
@@ -322,10 +327,10 @@ class MongoStudioStore {
         const now = asDate(this.now());
         const current = await this.deliveries.findOne(
             deliveryOwnershipFilter(messageId, chatId, claimToken),
-            { projection: { attempts: 1 } }
+            { projection: { attempts: 1, uncountedFailures: 1 } }
         );
         if (!current) return false;
-        const { exhausted, refund, nextAttemptAt } = failurePlan(current.attempts, now, options);
+        const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(current.attempts, now, options, current.uncountedFailures);
         const update = exhausted
             ? {
                 $set: { status: 'dead_letter', error: String(error).slice(0, 500), updatedAt: now },
@@ -334,7 +339,7 @@ class MongoStudioStore {
             : {
                 $set: { status: 'failed', error: String(error).slice(0, 500), updatedAt: now, nextAttemptAt },
                 $unset: { claimToken: '' },
-                ...(refund ? { $inc: { attempts: -1 } } : {})
+                ...(uncounted ? { $inc: { uncountedFailures: 1, ...(refund ? { attempts: -1 } : {}) } } : {})
             };
         const result = await this.deliveries.updateOne(
             deliveryOwnershipFilter(messageId, chatId, claimToken),
@@ -542,7 +547,7 @@ class MemoryStudioStore {
         const delivery = this.deliveries.get(deliveryKey(messageId, chatId));
         if (!delivery || delivery.status !== 'processing' || (claimToken && delivery.claimToken !== claimToken)) return false;
         const now = asDate(this.now());
-        const { exhausted, refund, nextAttemptAt } = failurePlan(delivery.attempts, now, options);
+        const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(delivery.attempts, now, options, delivery.uncountedFailures);
         if (exhausted) {
             Object.assign(delivery, { status: 'dead_letter', error: String(error), updatedAt: now });
             delete delivery.pdfData;
@@ -550,6 +555,7 @@ class MemoryStudioStore {
         } else {
             Object.assign(delivery, { status: 'failed', error: String(error), updatedAt: now, nextAttemptAt });
             if (refund) delivery.attempts = Number(delivery.attempts) - 1;
+            if (uncounted) delivery.uncountedFailures = Number(delivery.uncountedFailures || 0) + 1;
         }
         delete delivery.claimToken;
         return true;
@@ -600,6 +606,7 @@ module.exports = {
     DEFAULT_MAX_DELIVERY_ATTEMPTS,
     DEFAULT_DELIVERY_RETRY_BASE_MS,
     MAX_DELIVERY_RETRY_BACKOFF_MS,
+    MAX_UNCOUNTED_FAILURES,
     MemoryStudioStore,
     MongoStudioStore,
     computeRetryBackoffMs,

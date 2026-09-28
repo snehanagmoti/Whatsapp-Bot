@@ -225,7 +225,10 @@ class StudioEmailService {
                 deliveredRoutes += 1;
             } catch (error) {
                 await this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
+                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
+                    // A WhatsApp disconnect during the send is an outage, not a failed
+                    // report: do not let it use up the delivery's bounded attempts.
+                    countAttempt: Boolean(this.isClientReady())
                 });
                 failures.push({ routeName: route.name, error: error.message || String(error) });
             }
