@@ -41,6 +41,26 @@ class FakeCollection {
         return { matchedCount: 1 };
     }
 
+    find(filter) {
+        const ids = new Set(filter._id.$in);
+        const matches = [...this.documents.values()].filter(document => ids.has(document._id));
+        this.findCalls = (this.findCalls || 0) + 1;
+        return { toArray: async () => matches.map(document => ({ ...document })) };
+    }
+
+    async bulkWrite(operations) {
+        this.bulkWriteCalls = (this.bulkWriteCalls || 0) + 1;
+        for (const operation of operations) {
+            if (operation.updateOne) {
+                const { filter, update, upsert } = operation.updateOne;
+                await this.updateOne(filter, update, { upsert });
+            } else if (operation.deleteOne) {
+                await this.deleteOne(operation.deleteOne.filter);
+            }
+        }
+        return { ok: 1 };
+    }
+
     async deleteOne(filter) {
         return { deletedCount: this.documents.delete(filter._id) ? 1 : 0 };
     }
@@ -180,4 +200,39 @@ test('reset removes the stored session, keeps replay claims and starts fresh cre
     assert.equal(database.getCollection('baileys_auth').documents.size, 0);
     assert.equal(await auth.claimMessage('chat:participant:message-1', Date.now()), false,
         'command replay protection survives a session reset');
+});
+
+
+test('reads and writes Signal keys in single batched operations', async () => {
+    const database = fakeMongo();
+    const auth = await createState(database, { encryptionKey: 'd'.repeat(32) });
+    const keys = database.getCollection('baileys_auth');
+    const baseline = { find: keys.findCalls || 0, bulk: keys.bulkWriteCalls || 0 };
+
+    await auth.state.keys.set({
+        session: { 'a.0': { n: 1 }, 'b.0': { n: 2 }, 'c.0': { n: 3 } },
+        'pre-key': { 7: { k: 'seven' } }
+    });
+    assert.equal(keys.bulkWriteCalls - baseline.bulk, 1, 'one bulk write for the whole update');
+    assert.equal([...keys.documents.values()].every(doc => doc.encryptedValue && doc.value === undefined), true);
+
+    const sessions = await auth.state.keys.get('session', ['a.0', 'b.0', 'missing.0', 'c.0']);
+    assert.equal(keys.findCalls - baseline.find, 1, 'one query for all requested ids');
+    assert.deepEqual(sessions, { 'a.0': { n: 1 }, 'b.0': { n: 2 }, 'c.0': { n: 3 } });
+
+    await auth.state.keys.set({ session: { 'b.0': null }, 'pre-key': { 7: null } });
+    assert.deepEqual(Object.keys(await auth.state.keys.get('session', ['a.0', 'b.0'])), ['a.0']);
+    assert.deepEqual(await auth.state.keys.get('pre-key', ['7']), {});
+});
+
+test('batched reads still migrate plaintext keys to encrypted records', async () => {
+    const database = fakeMongo();
+    database.getCollection('baileys_auth').documents.set('bot:session-legacy.0', {
+        _id: 'bot:session-legacy.0', sessionId: 'bot', value: JSON.stringify({ legacy: true })
+    });
+    const auth = await createState(database, { encryptionKey: 'e'.repeat(32) });
+    assert.deepEqual(await auth.state.keys.get('session', ['legacy.0']), { 'legacy.0': { legacy: true } });
+    const migrated = database.getCollection('baileys_auth').documents.get('bot:session-legacy.0');
+    assert.equal(migrated.value, undefined);
+    assert.ok(migrated.encryptedValue);
 });
