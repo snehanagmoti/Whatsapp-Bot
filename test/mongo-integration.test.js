@@ -135,7 +135,8 @@ test('failed deliveries honour their backoff window, refunds and dead-lettering'
 
     const retried = await store.claimRetryableDelivery({ maxAttempts: 2 });
     assert.equal(retried.messageId, request.messageId);
-    assert.ok(Buffer.from(retried.pdfData.buffer || retried.pdfData).equals(pdf), 'the stored PDF survives for the worker');
+    assert.ok(Buffer.isBuffer(retried.pdfData), 'the worker receives the stored PDF as a Buffer');
+    assert.ok(retried.pdfData.equals(pdf), 'the stored PDF survives for the worker');
     await store.failDelivery(request.messageId, request.chatId, 'send failed again', { claimToken: retried.claimToken, maxAttempts: 2 });
     record = await store.deliveries.findOne({ _id: key });
     assert.equal(record.status, 'dead_letter');
@@ -184,7 +185,13 @@ test('email ingest, failure and worker recovery end to end', { skip }, async () 
             sends.push({ chatId, caption: options.caption });
         }
     };
-    const convertPdf = async () => [png, png];
+    // Behaves like the real renderer's input check, so a PDF that comes back
+    // from MongoDB as anything but a Buffer fails the test.
+    const convertPdf = async input => {
+        assert.ok(Buffer.isBuffer(input), `convertPdf received ${input && input.constructor && input.constructor.name}`);
+        assert.equal(input.subarray(0, 5).toString(), '%PDF-');
+        return [png, png];
+    };
     const service = new StudioEmailService({
         routeService: routes, store, client, convertPdf,
         allowedSenders: new Set(['approved@example.com']), retryBaseMs: 60_000

@@ -143,7 +143,10 @@ class MongoStudioStore {
         now = () => new Date()
     } = {}) {
         if (!uri) throw new Error('MONGODB_URI is required for Studio routing storage.');
-        this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000 });
+        // promoteBuffers: stored PDFs must come back as Node Buffers. Without
+        // it the driver returns BSON Binary objects, which the PDF renderer
+        // rejects, so every background retry failed.
+        this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000, promoteBuffers: true });
         this.dbName = dbName;
         this.deliveryLeaseMs = normalizeDeliveryLeaseMs(deliveryLeaseMs);
         this.now = now;
