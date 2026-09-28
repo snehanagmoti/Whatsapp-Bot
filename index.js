@@ -10,7 +10,7 @@ const { StudioDeliveryWorker } = require('./studioDeliveryWorker');
 const { StudioRouteService } = require('./studioRouting');
 const { MongoStudioStore } = require('./studioStore');
 const { parseCsvSet } = require('./validation');
-const { WhatsAppClient } = require('./whatsappClient');
+const { WhatsAppClient, normalizeJid } = require('./whatsappClient');
 
 const DEFAULT_STUDIO_ALLOWED_SENDERS = 'data-studio-noreply@google.com';
 
@@ -37,9 +37,11 @@ function studioConfigurationPresent() {
 
 async function canManageRoutes({ chatId, senderId, message }) {
     if (message.fromMe) return true;
-    const explicitAdmins = parseCsvSet(process.env.STUDIO_ROUTE_ADMIN_IDS);
-    if (explicitAdmins.has(senderId)) return true;
-    if (chatId.endsWith('@g.us')) return client.isGroupAdmin(chatId, senderId).catch(() => false);
+    // A sender can appear as a phone-number JID or as a LID; accept either.
+    const senderIds = [senderId, message.senderAltId].filter(Boolean);
+    const explicitAdmins = new Set([...parseCsvSet(process.env.STUDIO_ROUTE_ADMIN_IDS)].map(normalizeJid));
+    if (senderIds.some(id => explicitAdmins.has(normalizeJid(id)))) return true;
+    if (chatId.endsWith('@g.us')) return client.isGroupAdmin(chatId, senderIds).catch(() => false);
     return process.env.NODE_ENV !== 'production' && process.env.STUDIO_ALLOW_TEST_SETUP === 'true';
 }
 
