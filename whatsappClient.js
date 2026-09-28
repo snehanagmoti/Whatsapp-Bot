@@ -104,6 +104,7 @@ class WhatsAppClient extends EventEmitter {
         this.destroyed = false;
         this.saveChain = Promise.resolve();
         this.messageChain = Promise.resolve();
+        this.logoutRecovery = null;
     }
 
     async initialize() {
@@ -135,10 +136,7 @@ class WhatsAppClient extends EventEmitter {
 
     scheduleReconnect() {
         if (this.destroyed || this.reconnectTimer !== null) return;
-        const exponential = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * (2 ** this.reconnectAttempt));
-        const jitter = 0.8 + (Math.max(0, Math.min(1, Number(this.random()) || 0)) * 0.4);
-        const delay = Math.max(1, Math.round(exponential * jitter));
-        this.reconnectAttempt += 1;
+        const delay = this.nextBackoffDelay();
         this.reconnectTimer = this.setTimeoutFn(async () => {
             this.reconnectTimer = null;
             if (this.destroyed) return;
@@ -149,6 +147,57 @@ class WhatsAppClient extends EventEmitter {
                 this.scheduleReconnect();
             }
         }, delay);
+    }
+
+    nextBackoffDelay() {
+        const exponential = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * (2 ** this.reconnectAttempt));
+        const jitter = 0.8 + (Math.max(0, Math.min(1, Number(this.random()) || 0)) * 0.4);
+        this.reconnectAttempt += 1;
+        return Math.max(1, Math.round(exponential * jitter));
+    }
+
+    async resetAuthState() {
+        if (typeof this.authStore.reset === 'function') {
+            await this.authStore.reset();
+            return;
+        }
+        await this.authStore.clear();
+        if (typeof this.baileys.initAuthCreds !== 'function') {
+            throw new Error('Baileys does not expose initAuthCreds; cannot create a fresh session.');
+        }
+        this.authStore.state.creds = this.baileys.initAuthCreds();
+    }
+
+    // After WhatsApp logs this linked device out, the stored session is dead.
+    // Clear it, start from fresh credentials and reconnect so a new QR code is
+    // offered without restarting the process. The old in-memory credentials
+    // must not be reused: they would only be logged out again. If clearing
+    // fails (for example MongoDB is briefly unreachable) the recovery is
+    // retried with backoff instead of reconnecting on the dead session.
+    recoverFromLogout() {
+        if (this.logoutRecovery || this.destroyed) return this.logoutRecovery;
+        this.clearReconnectTimer();
+        this.logoutRecovery = (async () => {
+            // A credential save queued by the old socket must not rewrite the
+            // session after it has been cleared.
+            await this.saveChain.catch(() => {});
+            if (this.destroyed) return;
+            await this.resetAuthState();
+            if (this.destroyed) return;
+            this.reconnectAttempt = 0;
+            this.emit('session_reset');
+            this.scheduleReconnect();
+        })().catch(error => {
+            console.error('Could not reset the logged-out WhatsApp session:', error.message || error);
+            if (this.destroyed || this.reconnectTimer !== null) return;
+            this.reconnectTimer = this.setTimeoutFn(() => {
+                this.reconnectTimer = null;
+                this.recoverFromLogout();
+            }, this.nextBackoffDelay());
+        }).finally(() => {
+            this.logoutRecovery = null;
+        });
+        return this.logoutRecovery;
     }
 
     rememberMessage(message, nowMs) {
@@ -233,8 +282,8 @@ class WhatsAppClient extends EventEmitter {
             this.detachSocketListeners();
             if (loggedOut) {
                 this.authenticatedEmitted = false;
-                this.authStore.clear().catch(error => console.error('Could not clear logged-out session:', error.message || error));
                 this.emit('auth_failure', 'WhatsApp logged out this linked device.');
+                this.recoverFromLogout();
                 return;
             }
             this.scheduleReconnect();
@@ -322,6 +371,7 @@ class WhatsAppClient extends EventEmitter {
         if (this.socket) this.socket.end(undefined);
         await this.saveChain.catch(() => {});
         await this.messageChain.catch(() => {});
+        if (this.logoutRecovery) await this.logoutRecovery;
         if (this.authStore) await this.authStore.close();
     }
 }

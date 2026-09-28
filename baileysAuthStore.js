@@ -205,11 +205,19 @@ async function createMongoAuthState({
         }
     };
 
+    const clear = () => collection.deleteMany({ sessionId: normalizedSessionId });
     return {
         state,
         claimMessage,
         saveCreds: () => writeData(state.creds, 'creds'),
-        clear: () => collection.deleteMany({ sessionId: normalizedSessionId }),
+        clear,
+        // Removes the stored session and replaces the in-memory credentials
+        // with fresh ones, so the next socket starts a new QR pairing. Message
+        // replay claims are kept: they protect against re-running commands.
+        reset: async () => {
+            await clear();
+            state.creds = initAuthCreds();
+        },
         close: () => client.close()
     };
 }

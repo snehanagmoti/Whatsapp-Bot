@@ -9,7 +9,7 @@ const {
     shouldProcessMessageUpsert
 } = require('../whatsappClient');
 
-function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage } = {}) {
+function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage, authOverrides = {} } = {}) {
     const sockets = [];
     const timers = [];
     const clearedTimers = [];
@@ -18,7 +18,8 @@ function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage } =
         state: { creds: { registered: true } },
         saveCreds: async () => {},
         clear: async () => {},
-        close: async () => { authClosed = true; }
+        close: async () => { authClosed = true; },
+        ...authOverrides
     };
     if (claimMessage) authStore.claimMessage = claimMessage;
     const baileys = {
@@ -33,7 +34,8 @@ function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage } =
             sockets.push(socket);
             return socket;
         },
-        DisconnectReason: { loggedOut: 401 }
+        DisconnectReason: { loggedOut: 401 },
+        initAuthCreds: () => ({ registered: false, fresh: true })
     };
     const client = new WhatsAppClient({
         mongoUri: 'mongodb://unused',
@@ -53,7 +55,7 @@ function createHarness({ now = 1_800_000_000_000, random = 0.5, claimMessage } =
         messageFutureToleranceMs: 5000,
         seenMessageLimit: 2
     });
-    return { authClosed: () => authClosed, client, sockets, timers, clearedTimers };
+    return { authClosed: () => authClosed, authStore, client, sockets, timers, clearedTimers };
 }
 
 function commandMessage({ id = 'message-1', timestamp = 1_800_000_000, chatId = '123@g.us' } = {}) {
@@ -178,4 +180,80 @@ test('retires stale socket listeners and reconnects with capped exponential back
     await client.destroy();
     assert.equal(sockets[3].ended, true);
     assert.equal(authClosed(), true);
+});
+
+
+const flush = () => new Promise(resolve => setImmediate(resolve));
+const loggedOutUpdate = { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } };
+
+test('a logout clears the dead session, starts fresh credentials and reconnects for a new QR', async () => {
+    const order = [];
+    let releaseSave;
+    const { authStore, client, sockets, timers } = createHarness({
+        authOverrides: {
+            saveCreds: () => new Promise(resolve => { releaseSave = () => { order.push('save'); resolve(); }; }),
+            clear: async () => { order.push('clear'); }
+        }
+    });
+    const events = [];
+    ['auth_failure', 'session_reset', 'qr'].forEach(name => client.on(name, value => events.push([name, value])));
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', { connection: 'open' });
+    sockets[0].ev.emit('creds.update', {});
+    sockets[0].ev.emit('connection.update', loggedOutUpdate);
+    await flush();
+    assert.deepEqual(order, [], 'the clear waits for the in-flight credential save');
+    releaseSave();
+    await client.logoutRecovery;
+
+    assert.deepEqual(order, ['save', 'clear']);
+    assert.deepEqual(authStore.state.creds, { registered: false, fresh: true });
+    assert.deepEqual(events.map(([name]) => name), ['auth_failure', 'session_reset']);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 3000, 'backoff restarts from the base delay');
+
+    await timers[0].callback();
+    assert.equal(sockets.length, 2);
+    sockets[1].ev.emit('connection.update', { qr: 'fresh-qr' });
+    assert.deepEqual(events.at(-1), ['qr', 'fresh-qr']);
+});
+
+test('a failed session clear is retried with backoff instead of reconnecting on the dead session', async () => {
+    let clearCalls = 0;
+    const { authStore, client, sockets, timers } = createHarness({
+        authOverrides: {
+            clear: async () => {
+                clearCalls += 1;
+                if (clearCalls === 1) throw new Error('database unavailable');
+            }
+        }
+    });
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', loggedOutUpdate);
+    await flush(); await flush();
+    assert.equal(clearCalls, 1);
+    assert.equal(sockets.length, 1, 'no reconnect with the logged-out credentials');
+    assert.deepEqual(authStore.state.creds, { registered: true });
+    assert.equal(timers.length, 1);
+
+    timers[0].callback();
+    await flush(); await flush();
+    assert.equal(clearCalls, 2);
+    assert.deepEqual(authStore.state.creds, { registered: false, fresh: true });
+    assert.equal(timers.length, 2, 'reconnect scheduled after the successful reset');
+});
+
+test('destroying the client during logout recovery does not reconnect', async () => {
+    let releaseClear;
+    const { client, sockets, timers } = createHarness({
+        authOverrides: { clear: () => new Promise(resolve => { releaseClear = resolve; }) }
+    });
+    await client.initialize();
+    sockets[0].ev.emit('connection.update', loggedOutUpdate);
+    await flush();
+    const destroyed = client.destroy();
+    releaseClear();
+    await destroyed;
+    assert.equal(timers.length, 0);
+    assert.equal(sockets.length, 1);
 });

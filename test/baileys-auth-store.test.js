@@ -166,3 +166,18 @@ test('claims command messages once with a TTL-backed hashed identity', async () 
     assert.equal(claim.expiresAt.getTime(), now + DEFAULT_MESSAGE_CLAIM_TTL_MS);
     assert.equal(claim.messageTimestamp.getTime(), now - 1000);
 });
+
+test('reset removes the stored session, keeps replay claims and starts fresh credentials', async () => {
+    const database = fakeMongo();
+    const auth = await createState(database, { encryptionKey: 'c'.repeat(32) });
+    auth.state.creds.registered = true;
+    await auth.saveCreds();
+    await auth.state.keys.set({ session: { 'contact-1': { some: 'session' } } });
+    assert.equal(await auth.claimMessage('chat:participant:message-1', Date.now()), true);
+
+    await auth.reset();
+    assert.deepEqual(auth.state.creds, { registered: false, secret: 'initial-secret' });
+    assert.equal(database.getCollection('baileys_auth').documents.size, 0);
+    assert.equal(await auth.claimMessage('chat:participant:message-1', Date.now()), false,
+        'command replay protection survives a session reset');
+});
