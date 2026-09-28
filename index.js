@@ -1,3 +1,5 @@
+// Must run before anything can log: keeps Signal key material out of logs.
+require('./logRedaction').installLogRedaction();
 require('dotenv').config();
 const qrcode = require('qrcode-terminal');
 const { convertPdfToPngPages } = require('./pdfProcessor');
