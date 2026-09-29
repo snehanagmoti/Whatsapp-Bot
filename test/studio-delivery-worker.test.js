@@ -94,12 +94,18 @@ test('moves a delivery to dead_letter after exhausting max attempts and stops re
     assert.equal(exhausted.status, 'dead_letter');
     assert.equal(exhausted.attempts, 2);
     assert.equal(exhausted.error, 'WhatsApp rejected the image');
-    assert.equal(exhausted.pdfData, undefined, 'a dead-lettered delivery must not keep holding the PDF bytes');
+    assert.ok(Buffer.isBuffer(exhausted.pdfData), 'the PDF is kept for a while so an operator can retry');
 
     clock = new Date(clock.getTime() + 10 * 60 * 1000);
     await worker.tick();
-    assert.equal(sends.length, 0, 'a dead-lettered delivery must never be retried again');
+    assert.equal(sends.length, 0, 'a dead-lettered delivery must never be retried again automatically');
     assert.equal(store.deliveries.get(deliveryKey(messageId, chatId)).status, 'dead_letter');
+
+    clock = new Date(clock.getTime() + 7 * 24 * 60 * 60 * 1000);
+    await worker.tick();
+    const expired = store.deliveries.get(deliveryKey(messageId, chatId));
+    assert.equal(expired.status, 'dead_letter');
+    assert.equal(expired.pdfData, undefined, 'the PDF is released after the dead-letter retention window');
 });
 
 test('reclaims a delivery abandoned mid-processing (simulated crash) and completes it', async () => {
@@ -196,7 +202,8 @@ test('a synchronous ingest failure becomes retryable by the worker without Apps 
 
     const afterIngestFailure = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
     assert.equal(afterIngestFailure.status, 'failed');
-    assert.ok(Buffer.isBuffer(afterIngestFailure.pdfData), 'the PDF from the failed ingest must be retained for the worker');
+    assert.equal(afterIngestFailure.pdfData, undefined, 'the delivery references the shared PDF instead of a copy');
+    assert.ok((await store.loadPdf(afterIngestFailure.pdfRef)).equals(pdf), 'the PDF from the failed ingest is retained for the worker');
 
     sendShouldFail = false;
     clock = new Date(afterIngestFailure.nextAttemptAt.getTime() + 1);
@@ -205,6 +212,7 @@ test('a synchronous ingest failure becomes retryable by the worker without Apps 
     const recovered = store.deliveries.get(deliveryKey(payload.messageId, '123@g.us'));
     assert.equal(recovered.status, 'delivered');
     assert.equal(sends.length, 2);
+    assert.equal(store.pdfs.size, 0, 'the shared PDF is released once no delivery needs it');
 });
 
 test('a WhatsApp disconnect during a retry does not consume one of the bounded attempts', async () => {

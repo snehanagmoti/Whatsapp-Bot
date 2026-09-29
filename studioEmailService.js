@@ -87,7 +87,8 @@ class StudioEmailService {
         allowedSenders = new Set(),
         maxPdfBytes = Number(process.env.STUDIO_MAX_PDF_BYTES) || 15 * 1024 * 1024,
         maxAttempts = Number(process.env.STUDIO_DELIVERY_MAX_ATTEMPTS) || DEFAULT_MAX_DELIVERY_ATTEMPTS,
-        retryBaseMs = Number(process.env.STUDIO_DELIVERY_RETRY_BASE_MS) || DEFAULT_DELIVERY_RETRY_BASE_MS
+        retryBaseMs = Number(process.env.STUDIO_DELIVERY_RETRY_BASE_MS) || DEFAULT_DELIVERY_RETRY_BASE_MS,
+        onDeadLetter = null
     } = {}) {
         if (!routeService || !store || !client || !convertPdf) throw new Error('Studio email service dependencies are required.');
         this.routeService = routeService;
@@ -99,6 +100,30 @@ class StudioEmailService {
         this.maxPdfBytes = maxPdfBytes;
         this.maxAttempts = maxAttempts;
         this.retryBaseMs = retryBaseMs;
+        this.onDeadLetter = onDeadLetter;
+    }
+
+    async notifyDeadLetter(details) {
+        if (typeof this.onDeadLetter !== 'function') return;
+        try {
+            await this.onDeadLetter(details);
+        } catch (error) {
+            console.error('Dead-letter alert failed:', error.message || error);
+        }
+    }
+
+    async failRoute({ messageId, route, subject, claimToken, error, countAttempt }) {
+        const message = error.message || String(error);
+        const outcome = await this.store.failDelivery(messageId, route.chatId, message, {
+            claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs, countAttempt
+        });
+        if (outcome === 'dead_letter') {
+            await this.notifyDeadLetter({
+                messageId, chatId: route.chatId, routeId: route._id, routeName: route.name,
+                subject, error: message, attempts: this.maxAttempts
+            });
+        }
+        return outcome;
     }
 
     async process(payload = {}) {
@@ -142,6 +167,18 @@ class StudioEmailService {
         const pdf = decodePdf(attachment.data, this.maxPdfBytes);
         const subject = typeof payload.subject === 'string' ? payload.subject.trim().slice(0, 200) : '';
 
+        // Store the source PDF once for all destination chats; each delivery
+        // references it. Stores without shared PDF support get it inline.
+        let pdfRef = null;
+        if (typeof this.store.savePdf === 'function') {
+            try {
+                pdfRef = await this.store.savePdf(messageId, pdf);
+            } catch (error) {
+                console.error('Could not store the report PDF:', error.message || error);
+                throw new StudioEmailError('Could not store the report for delivery. Retry the request.', 503);
+            }
+        }
+
         const claimedRoutes = [];
         const busyRoutes = [];
         const deadLetterRoutes = [];
@@ -153,7 +190,7 @@ class StudioEmailService {
                     routeId: route._id,
                     chatId: route.chatId,
                     subject,
-                    pdf
+                    ...(pdfRef ? { pdfRef } : { pdf })
                 });
                 if (claim && claim.status === 'claimed') {
                     claimedRoutes.push({ route, claimToken: claim.claimToken, nextPage: claimPageOffset(claim) });
@@ -177,6 +214,9 @@ class StudioEmailService {
             throw new StudioEmailError('Could not claim report delivery. Retry the request.', 503);
         }
         if (!claimedRoutes.length) {
+            // Nothing to send now: drop the stored copy unless a busy, failed or
+            // dead-lettered delivery of this email still needs it.
+            if (pdfRef) await this.store.releasePdf(pdfRef).catch(() => {});
             if (busyRoutes.length) {
                 throw new StudioEmailError(
                     'Report delivery is still processing or waiting for its scheduled retry. Retry the request later.',
@@ -199,9 +239,7 @@ class StudioEmailService {
             pages = await this.convertPdf(pdf);
         } catch (error) {
             await Promise.all(claimedRoutes.map(({ route, claimToken }) =>
-                this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs
-                })
+                this.failRoute({ messageId, route, subject, claimToken, error, countAttempt: true })
             ));
             throw new StudioEmailError(`Report delivery failed: ${error.message || error}`, 502);
         }
@@ -225,11 +263,10 @@ class StudioEmailService {
                 }));
                 deliveredRoutes += 1;
             } catch (error) {
-                await this.store.failDelivery(messageId, route.chatId, error.message || error, {
-                    claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
-                    // A WhatsApp disconnect during the send is an outage, not a failed
-                    // report: do not let it use up the delivery's bounded attempts.
-                    countAttempt: Boolean(this.isClientReady())
+                // A WhatsApp disconnect during the send is an outage, not a failed
+                // report: do not let it use up the delivery's bounded attempts.
+                await this.failRoute({
+                    messageId, route, subject, claimToken, error, countAttempt: Boolean(this.isClientReady())
                 });
                 failures.push({ routeName: route.name, error: error.message || String(error) });
             }

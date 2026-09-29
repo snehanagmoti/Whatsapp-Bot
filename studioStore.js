@@ -11,6 +11,21 @@ const MAX_DELIVERY_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 const MAX_UNCOUNTED_FAILURES = 24;
 
 const LISTING_EXCLUDED_FIELDS = Object.freeze({ pdfData: 0, claimToken: 0 });
+// Stored report PDFs are a safety net for retries, not an archive.
+const PDF_RETENTION_SECONDS = 60 * 60 * 24 * 30;
+const DEFAULT_DEAD_LETTER_PDF_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// Delivery states that may still need the source PDF.
+const PDF_NEEDED_STATUSES = ['processing', 'failed', 'dead_letter'];
+
+// One stored copy per source email, shared by every destination chat.
+function pdfKeyFor(messageId) {
+    return crypto.createHash('sha256').update(`pdf\0${messageId}`).digest('hex');
+}
+
+function normalizeRetentionMs(value, fallback) {
+    const ms = Number(value);
+    return Number.isFinite(ms) && ms >= 60 * 1000 ? Math.floor(ms) : fallback;
+}
 
 function normalizeRouteName(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -140,10 +155,15 @@ class MongoStudioStore {
         uri,
         dbName = 'whatsapp_bot',
         deliveryLeaseMs = process.env.STUDIO_DELIVERY_LEASE_MS,
+        deadLetterPdfRetentionMs = process.env.STUDIO_DEAD_LETTER_RETENTION_MS,
         now = () => new Date()
     } = {}) {
         if (!uri) throw new Error('MONGODB_URI is required for Studio routing storage.');
-        this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000 });
+        this.deadLetterPdfRetentionMs = normalizeRetentionMs(deadLetterPdfRetentionMs, DEFAULT_DEAD_LETTER_PDF_RETENTION_MS);
+        // promoteBuffers: stored PDFs must come back as Node Buffers. Without
+        // it the driver returns BSON Binary objects, which the PDF renderer
+        // rejects, so every background retry failed.
+        this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000, promoteBuffers: true });
         this.dbName = dbName;
         this.deliveryLeaseMs = normalizeDeliveryLeaseMs(deliveryLeaseMs);
         this.now = now;
@@ -154,11 +174,14 @@ class MongoStudioStore {
         const db = this.client.db(this.dbName);
         this.routes = db.collection('studio_routes');
         this.deliveries = db.collection('studio_deliveries');
+        this.pdfs = db.collection('studio_pdfs');
         await Promise.all([
             this.routes.createIndex({ tokenHash: 1 }, { unique: true }),
             this.routes.createIndex({ chatId: 1, nameKey: 1 }, { unique: true }),
             this.deliveries.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 }),
-            this.deliveries.createIndex({ status: 1, attempts: 1, updatedAt: 1 })
+            this.deliveries.createIndex({ status: 1, attempts: 1, updatedAt: 1 }),
+            this.deliveries.createIndex({ pdfRef: 1, status: 1 }),
+            this.pdfs.createIndex({ createdAt: 1 }, { expireAfterSeconds: PDF_RETENTION_SECONDS })
         ]);
         return this;
     }
@@ -226,12 +249,49 @@ class MongoStudioStore {
             .sort({ updatedAt: -1 }).limit(normalizeListLimit(limit)).toArray();
     }
 
-    async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {
+    // Stores the source PDF once per email. Deliveries reference it by
+    // pdfRef, so N destination chats no longer mean N copies.
+    async savePdf(messageId, pdf) {
+        const ref = pdfKeyFor(messageId);
+        const now = asDate(this.now());
+        await this.pdfs.updateOne(
+            { _id: ref },
+            { $set: { messageId, data: pdf, updatedAt: now }, $setOnInsert: { createdAt: now } },
+            { upsert: true }
+        );
+        return ref;
+    }
+
+    async loadPdf(ref) {
+        if (!ref) return null;
+        const record = await this.pdfs.findOne({ _id: ref });
+        return record && Buffer.isBuffer(record.data) ? record.data : null;
+    }
+
+    // Deletes a stored PDF once no delivery that could still need it
+    // references it. The collection's TTL index is the backstop.
+    async releasePdf(ref) {
+        if (!ref) return false;
+        const stillNeeded = await this.deliveries.countDocuments({ pdfRef: ref, status: { $in: PDF_NEEDED_STATUSES } }, { limit: 1 });
+        if (stillNeeded) return false;
+        const result = await this.pdfs.deleteOne({ _id: ref });
+        return result.deletedCount === 1;
+    }
+
+    async loadDeliveryPdf(delivery) {
+        if (!delivery) return null;
+        if (Buffer.isBuffer(delivery.pdfData)) return delivery.pdfData;
+        return this.loadPdf(delivery.pdfRef);
+    }
+
+    async beginDelivery({ messageId, routeId, chatId, subject, pdf, pdfRef }) {
         const key = deliveryKey(messageId, chatId);
         const now = asDate(this.now());
         const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
         const claimToken = crypto.randomUUID();
-        const pdfUpdate = Buffer.isBuffer(pdf) ? { pdfData: pdf } : {};
+        // A shared pdfRef is preferred; an inline PDF buffer is still accepted
+        // (and older records may still carry one in pdfData).
+        const pdfUpdate = pdfRef ? { pdfRef } : (Buffer.isBuffer(pdf) ? { pdfData: pdf } : {});
 
         // Prefer the destination-aware record whenever it exists. This matters
         // after a failed legacy record has already been migrated once.
@@ -241,7 +301,7 @@ class MongoStudioStore {
                 reclaimableDeliveryFilter(key, staleBefore, now),
                 {
                     $set: { routeId, chatId, subject, status: 'processing', claimToken, updatedAt: now, ...pdfUpdate },
-                    $unset: { error: '', nextAttemptAt: '' },
+                    $unset: { error: '', nextAttemptAt: '', ...(pdfRef ? { pdfData: '' } : {}) },
                     $inc: { attempts: 1 }
                 },
                 { returnDocument: 'after' }
@@ -316,12 +376,15 @@ class MongoStudioStore {
             deliveryOwnershipFilter(messageId, chatId, claimToken),
             {
                 $set: { ...deliveryDetails, status: 'delivered', updatedAt: asDate(this.now()) },
-                $unset: { claimToken: '', error: '', pdfData: '', nextAttemptAt: '' }
+                $unset: { claimToken: '', error: '', pdfData: '', pdfRef: '', nextAttemptAt: '' }
             }
         );
+        if (result.matchedCount === 1) await this.releasePdf(pdfKeyFor(messageId)).catch(() => {});
         return result.matchedCount === 1;
     }
 
+    // Returns 'failed' (will be retried), 'dead_letter' (attempts exhausted)
+    // or false when the caller no longer owns the claim.
     async failDelivery(messageId, chatId, error, options = {}) {
         const { claimToken, maxAttempts } = options;
         const now = asDate(this.now());
@@ -333,8 +396,10 @@ class MongoStudioStore {
         const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(current.attempts, now, options, current.uncountedFailures);
         const update = exhausted
             ? {
-                $set: { status: 'dead_letter', error: String(error).slice(0, 500), updatedAt: now },
-                $unset: { claimToken: '', pdfData: '', nextAttemptAt: '' }
+                // The PDF is kept (for STUDIO_DEAD_LETTER_RETENTION_MS) so an
+                // operator can retry the delivery from the dashboard.
+                $set: { status: 'dead_letter', error: String(error).slice(0, 500), updatedAt: now, deadLetteredAt: now },
+                $unset: { claimToken: '', nextAttemptAt: '' }
             }
             : {
                 $set: { status: 'failed', error: String(error).slice(0, 500), updatedAt: now, nextAttemptAt },
@@ -345,7 +410,66 @@ class MongoStudioStore {
             deliveryOwnershipFilter(messageId, chatId, claimToken),
             update
         );
-        return result.matchedCount === 1;
+        if (result.matchedCount !== 1) return false;
+        return exhausted ? 'dead_letter' : 'failed';
+    }
+
+    // Moves processing leases that were abandoned at the attempt cap to
+    // dead_letter and returns them (for alerting).
+    async sweepAbandonedDeliveries({ maxAttempts } = {}) {
+        const now = asDate(this.now());
+        const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
+        const limit = normalizeMaxDeliveryAttempts(maxAttempts);
+        const filter = { status: 'processing', updatedAt: { $lte: staleBefore }, attempts: { $gte: limit } };
+        const abandoned = await this.deliveries.find(filter, { projection: LISTING_EXCLUDED_FIELDS }).limit(100).toArray();
+        if (!abandoned.length) return [];
+        await this.deliveries.updateMany(
+            { _id: { $in: abandoned.map(item => item._id) }, ...filter },
+            {
+                $set: { status: 'dead_letter', updatedAt: now, deadLetteredAt: now, error: 'Delivery lease expired at the attempt limit.' },
+                $unset: { claimToken: '', nextAttemptAt: '' }
+            }
+        );
+        return abandoned;
+    }
+
+    // Dead letters keep their PDF only for a limited time.
+    async releaseExpiredDeadLetterPdfs() {
+        const cutoff = new Date(asDate(this.now()).getTime() - this.deadLetterPdfRetentionMs);
+        const expired = await this.deliveries.find(
+            { status: 'dead_letter', deadLetteredAt: { $lte: cutoff }, $or: [{ pdfRef: { $exists: true } }, { pdfData: { $exists: true } }] },
+            { projection: { pdfRef: 1 } }
+        ).limit(200).toArray();
+        if (!expired.length) return 0;
+        await this.deliveries.updateMany(
+            { _id: { $in: expired.map(item => item._id) } },
+            { $unset: { pdfRef: '', pdfData: '' } }
+        );
+        for (const ref of new Set(expired.map(item => item.pdfRef).filter(Boolean))) {
+            await this.releasePdf(ref).catch(() => {});
+        }
+        return expired.length;
+    }
+
+    // Puts a dead-lettered delivery back in the retry queue with a fresh
+    // attempt budget, provided its source PDF is still stored.
+    async requeueDelivery(messageId, chatId) {
+        const key = deliveryKey(messageId, chatId);
+        const delivery = await this.deliveries.findOne({ _id: key }, { projection: { pdfData: 0 } });
+        if (!delivery) return { status: 'not_found' };
+        if (delivery.status !== 'dead_letter') return { status: 'not_dead_letter', current: delivery.status };
+        const hasInlinePdf = await this.deliveries.countDocuments({ _id: key, pdfData: { $exists: true } }, { limit: 1 });
+        const hasSharedPdf = delivery.pdfRef ? await this.pdfs.countDocuments({ _id: delivery.pdfRef }, { limit: 1 }) : 0;
+        if (!hasInlinePdf && !hasSharedPdf) return { status: 'pdf_missing' };
+        const now = asDate(this.now());
+        const result = await this.deliveries.updateOne(
+            { _id: key, status: 'dead_letter' },
+            {
+                $set: { status: 'failed', attempts: 0, uncountedFailures: 0, nextAttemptAt: now, requeuedAt: now, updatedAt: now },
+                $unset: { deadLetteredAt: '' }
+            }
+        );
+        return { status: result.matchedCount === 1 ? 'requeued' : 'not_dead_letter' };
     }
 
     // Picks up one retryable delivery for the background worker: a failed
@@ -358,19 +482,21 @@ class MongoStudioStore {
         const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
         const limit = normalizeMaxDeliveryAttempts(maxAttempts);
 
-        await this.deliveries.updateMany(
-            { status: 'processing', updatedAt: { $lte: staleBefore }, attempts: { $gte: limit } },
-            { $set: { status: 'dead_letter', updatedAt: now }, $unset: { pdfData: '', claimToken: '', nextAttemptAt: '' } }
-        );
+        await this.sweepAbandonedDeliveries({ maxAttempts: limit });
 
         const claimToken = crypto.randomUUID();
         const claimed = await this.deliveries.findOneAndUpdate(
             {
-                pdfData: { $exists: true },
                 attempts: { $lt: limit },
-                $or: [
-                    { status: 'failed', $or: [{ nextAttemptAt: { $exists: false } }, { nextAttemptAt: { $lte: now } }] },
-                    { status: 'processing', updatedAt: { $lte: staleBefore } }
+                $and: [
+                    { $or: [{ pdfData: { $exists: true } }, { pdfRef: { $exists: true } }] },
+                    {
+                        $or: [
+                            { status: 'failed', nextAttemptAt: { $exists: false } },
+                            { status: 'failed', nextAttemptAt: { $lte: now } },
+                            { status: 'processing', updatedAt: { $lte: staleBefore } }
+                        ]
+                    }
                 ]
             },
             {
@@ -389,9 +515,15 @@ class MongoStudioStore {
 }
 
 class MemoryStudioStore {
-    constructor({ deliveryLeaseMs = DEFAULT_DELIVERY_LEASE_MS, now = () => new Date() } = {}) {
+    constructor({
+        deliveryLeaseMs = DEFAULT_DELIVERY_LEASE_MS,
+        deadLetterPdfRetentionMs = DEFAULT_DEAD_LETTER_PDF_RETENTION_MS,
+        now = () => new Date()
+    } = {}) {
         this.routes = [];
         this.deliveries = new Map();
+        this.pdfs = new Map();
+        this.deadLetterPdfRetentionMs = normalizeRetentionMs(deadLetterPdfRetentionMs, DEFAULT_DEAD_LETTER_PDF_RETENTION_MS);
         this.nextId = 1;
         this.deliveryLeaseMs = normalizeDeliveryLeaseMs(deliveryLeaseMs);
         this.now = now;
@@ -470,21 +602,48 @@ class MemoryStudioStore {
             .map(({ pdfData, claimToken, ...listed }) => listed);
     }
 
-    async beginDelivery({ messageId, routeId, chatId, subject, pdf }) {
+    async savePdf(messageId, pdf) {
+        const ref = pdfKeyFor(messageId);
+        const existing = this.pdfs.get(ref);
+        this.pdfs.set(ref, { messageId, data: pdf, createdAt: existing ? existing.createdAt : asDate(this.now()) });
+        return ref;
+    }
+
+    async loadPdf(ref) {
+        const record = ref && this.pdfs.get(ref);
+        return record ? record.data : null;
+    }
+
+    async releasePdf(ref) {
+        if (!ref) return false;
+        for (const delivery of this.deliveries.values()) {
+            if (delivery.pdfRef === ref && PDF_NEEDED_STATUSES.includes(delivery.status)) return false;
+        }
+        return this.pdfs.delete(ref);
+    }
+
+    async loadDeliveryPdf(delivery) {
+        if (!delivery) return null;
+        if (Buffer.isBuffer(delivery.pdfData)) return delivery.pdfData;
+        return this.loadPdf(delivery.pdfRef);
+    }
+
+    async beginDelivery({ messageId, routeId, chatId, subject, pdf, pdfRef }) {
         const key = deliveryKey(messageId, chatId);
         const existing = this.deliveries.get(key);
         const now = asDate(this.now());
         const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
         const claimToken = crypto.randomUUID();
-        const pdfData = Buffer.isBuffer(pdf) ? pdf : undefined;
+        const pdfFields = pdfRef ? { pdfRef } : (Buffer.isBuffer(pdf) ? { pdfData: pdf } : {});
         if (existing) {
             if (!isReclaimableDelivery(existing, staleBefore, now)) return unclaimedResult(existing);
             Object.assign(existing, {
                 routeId, chatId, subject, status: 'processing', claimToken,
                 attempts: Number(existing.attempts || 0) + 1,
                 updatedAt: now,
-                ...(pdfData ? { pdfData } : {})
+                ...pdfFields
             });
+            if (pdfRef) delete existing.pdfData;
             delete existing.error;
             delete existing.nextAttemptAt;
             return claimResult(existing, claimToken);
@@ -500,7 +659,7 @@ class MemoryStudioStore {
             attempts: Number(matchingLegacy?.attempts || 0) + 1,
             createdAt: now,
             updatedAt: now,
-            ...(pdfData ? { pdfData } : {})
+            ...pdfFields
         };
         if (matchingLegacy && Number.isSafeInteger(matchingLegacy.totalPages)
             && matchingLegacy.totalPages >= delivery.deliveredPages) {
@@ -538,10 +697,13 @@ class MemoryStudioStore {
         delete delivery.claimToken;
         delete delivery.error;
         delete delivery.pdfData;
+        delete delivery.pdfRef;
         delete delivery.nextAttemptAt;
+        await this.releasePdf(pdfKeyFor(messageId));
         return true;
     }
 
+    // See MongoStudioStore.failDelivery for the return values.
     async failDelivery(messageId, chatId, error, options = {}) {
         const { claimToken } = options;
         const delivery = this.deliveries.get(deliveryKey(messageId, chatId));
@@ -549,8 +711,7 @@ class MemoryStudioStore {
         const now = asDate(this.now());
         const { exhausted, refund, uncounted, nextAttemptAt } = failurePlan(delivery.attempts, now, options, delivery.uncountedFailures);
         if (exhausted) {
-            Object.assign(delivery, { status: 'dead_letter', error: String(error), updatedAt: now });
-            delete delivery.pdfData;
+            Object.assign(delivery, { status: 'dead_letter', error: String(error), updatedAt: now, deadLetteredAt: now });
             delete delivery.nextAttemptAt;
         } else {
             Object.assign(delivery, { status: 'failed', error: String(error), updatedAt: now, nextAttemptAt });
@@ -558,7 +719,58 @@ class MemoryStudioStore {
             if (uncounted) delivery.uncountedFailures = Number(delivery.uncountedFailures || 0) + 1;
         }
         delete delivery.claimToken;
-        return true;
+        return exhausted ? 'dead_letter' : 'failed';
+    }
+
+    async sweepAbandonedDeliveries({ maxAttempts } = {}) {
+        const now = asDate(this.now());
+        const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
+        const limit = normalizeMaxDeliveryAttempts(maxAttempts);
+        const swept = [];
+        for (const delivery of this.deliveries.values()) {
+            if (delivery.status === 'processing' && Number(delivery.attempts || 0) >= limit
+                && delivery.updatedAt && delivery.updatedAt.getTime() <= staleBefore.getTime()) {
+                const { pdfData, claimToken, ...listed } = delivery;
+                swept.push(listed);
+                Object.assign(delivery, {
+                    status: 'dead_letter', updatedAt: now, deadLetteredAt: now,
+                    error: 'Delivery lease expired at the attempt limit.'
+                });
+                delete delivery.claimToken;
+                delete delivery.nextAttemptAt;
+            }
+        }
+        return swept;
+    }
+
+    async releaseExpiredDeadLetterPdfs() {
+        const cutoff = asDate(this.now()).getTime() - this.deadLetterPdfRetentionMs;
+        let released = 0;
+        const refs = new Set();
+        for (const delivery of this.deliveries.values()) {
+            if (delivery.status !== 'dead_letter' || !delivery.deadLetteredAt) continue;
+            if (delivery.deadLetteredAt.getTime() > cutoff) continue;
+            if (!delivery.pdfRef && !delivery.pdfData) continue;
+            if (delivery.pdfRef) refs.add(delivery.pdfRef);
+            delete delivery.pdfRef;
+            delete delivery.pdfData;
+            released += 1;
+        }
+        for (const ref of refs) await this.releasePdf(ref);
+        return released;
+    }
+
+    async requeueDelivery(messageId, chatId) {
+        const delivery = this.deliveries.get(deliveryKey(messageId, chatId));
+        if (!delivery) return { status: 'not_found' };
+        if (delivery.status !== 'dead_letter') return { status: 'not_dead_letter', current: delivery.status };
+        if (!delivery.pdfData && !(delivery.pdfRef && this.pdfs.has(delivery.pdfRef))) return { status: 'pdf_missing' };
+        const now = asDate(this.now());
+        Object.assign(delivery, {
+            status: 'failed', attempts: 0, uncountedFailures: 0, nextAttemptAt: now, requeuedAt: now, updatedAt: now
+        });
+        delete delivery.deadLetteredAt;
+        return { status: 'requeued' };
     }
 
     // See MongoStudioStore.claimRetryableDelivery for the semantics this mirrors.
@@ -567,19 +779,10 @@ class MemoryStudioStore {
         const staleBefore = new Date(now.getTime() - this.deliveryLeaseMs);
         const limit = normalizeMaxDeliveryAttempts(maxAttempts);
 
-        for (const delivery of this.deliveries.values()) {
-            if (delivery.status === 'processing' && Number(delivery.attempts || 0) >= limit
-                && delivery.updatedAt && delivery.updatedAt.getTime() <= staleBefore.getTime()) {
-                delivery.status = 'dead_letter';
-                delivery.updatedAt = now;
-                delete delivery.pdfData;
-                delete delivery.claimToken;
-                delete delivery.nextAttemptAt;
-            }
-        }
+        await this.sweepAbandonedDeliveries({ maxAttempts: limit });
 
         for (const delivery of this.deliveries.values()) {
-            if (!delivery.pdfData) continue;
+            if (!delivery.pdfData && !delivery.pdfRef) continue;
             if (Number(delivery.attempts || 0) >= limit) continue;
             const retryableFailed = delivery.status === 'failed'
                 && (!delivery.nextAttemptAt || delivery.nextAttemptAt.getTime() <= now.getTime());
@@ -607,8 +810,10 @@ module.exports = {
     DEFAULT_DELIVERY_RETRY_BASE_MS,
     MAX_DELIVERY_RETRY_BACKOFF_MS,
     MAX_UNCOUNTED_FAILURES,
+    DEFAULT_DEAD_LETTER_PDF_RETENTION_MS,
     MemoryStudioStore,
     MongoStudioStore,
+    pdfKeyFor,
     computeRetryBackoffMs,
     deliveryKey,
     normalizeMaxDeliveryAttempts,

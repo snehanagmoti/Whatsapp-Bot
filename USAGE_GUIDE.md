@@ -1,4 +1,4 @@
-# Using the Report Bot - v1.3.0
+# Using the Report Bot - v1.5.0
 
 ## One-time operator setup
 
@@ -19,7 +19,18 @@ FORWARD_NOT_BEFORE=<ISO timestamp from which reports may be forwarded>
 
 For a new installation, select and run `installReportForwarder` once to create one five-minute trigger. It sets a missing cutover to now. When upgrading an existing installation, preserve its cutover and existing trigger. A direct first run of `forwardUnreadReports` with no cutover sets it to now and intentionally skips the existing backlog.
 
-Optional Script Properties are `FORWARD_MAX_THREADS_PER_RUN` (50-2000, default 500) and `FORWARD_LOOKBACK_DAYS` (1-30, default 7). Source changes must be saved in Apps Script; a GitHub push alone does not update that separate project.
+Optional Script Properties:
+
+```text
+FORWARD_MAX_THREADS_PER_RUN   50-2000, default 500
+FORWARD_LOOKBACK_DAYS         1-30, default 7
+FORWARD_MAX_RUNTIME_SECONDS   60-330, default 270 (stop starting new mail before Apps Script's 6-minute limit)
+KEEP_SERVICE_AWAKE            true/false, default true
+```
+
+With `KEEP_SERVICE_AWAKE` on, every five-minute run sends a `GET /healthz` to the bot. Render's free tier spins a web service down after 15 minutes without inbound traffic, which also pauses the delivery-retry worker and the WhatsApp connection; the ping prevents that. Render grants 750 free instance hours per workspace per calendar month and suspends all free web services if they run out, while one always-on service uses at most 744 hours. Set `KEEP_SERVICE_AWAKE=false` if the same Render workspace runs other free web services.
+
+Source changes must be saved in Apps Script; a GitHub push alone does not update that separate project. The run summary in Executions shows the running bridge version (for example `Report forwarder v1.3.0 summary`).
 
 ## Set up a report for one chat
 
@@ -71,6 +82,10 @@ The same route management is also available as a web dashboard at `/admin/` on t
 
 The dashboard calls the same `routeService` used by WhatsApp commands, so routes created one way are immediately visible and manageable the other way.
 
+A delivery that has given up (`dead_letter`) shows a **Retry** button while its source PDF is still stored (seven days by default, `STUDIO_DEAD_LETTER_RETENTION_MS`). Retry puts it back in the queue with a fresh set of attempts; the background worker sends it within about a minute. After the retention window, send the report again from Looker Studio instead.
+
+To be told when a delivery gives up, set `STUDIO_ALERT_CHAT_ID` on the service to a WhatsApp chat ID (for example an admin group; get it with `!chatid`). The bot then posts the report name, chat, subject and last error to that chat. Alerts are limited to ten per ten minutes and are skipped while WhatsApp is disconnected; they are always written to the service log.
+
 The bot stores an HMAC of each token, so the list command cannot recover the original alias. If the alias is lost or exposed, rotate it and replace the old schedule recipient with the new address. Rotation invalidates the previous address. `!chatid` is useful for diagnostics and the optional full-Looker Action Hub; alias-based Studio setup already captures the destination automatically.
 
 Pausing intentionally acknowledges and skips that mail. Resuming does not automatically send the PDFs missed while paused. Schedule a fresh delivery to test resumed routing.
@@ -81,7 +96,7 @@ Use a controlled chat and a small report: the supplied limits are five pages, 15
 
 Confirm the deployed version and readiness, the saved Apps Script source, the mailbox account, matching ingestion token, preserved cutover and the exact active alias. Then schedule one new delivery after the cutover. Check the mail receipt, bridge outcome and WhatsApp images in that order. Repeat with a second chat and a multi-page report.
 
-The local suite passed 88 tests without failures or skips during release preparation. Real email receipt, hosting availability and WhatsApp delivery still need this end-to-end acceptance test.
+The v1.5.0 release suite passed 141 unit tests, and CI runs 11 further MongoDB integration tests against a real MongoDB server. Real email receipt, hosting availability and WhatsApp delivery still need this end-to-end acceptance test.
 
 ## If the email arrives but the images do not
 
@@ -89,11 +104,13 @@ The local suite passed 88 tests without failures or skips during release prepara
 2. Open Executions. Confirm the five-minute trigger runs. An execution marked `Completed` only means the function finished; it may have skipped all messages.
 3. Expand the latest execution and inspect its forwarding/rejection log. A manual `forwardUnreadReports` run can retry eligible mail; it cannot bypass the cutover or processed-message ledger.
 4. Check `/readyz` and `/versionz`, then the service logs for the matching Gmail message ID. Never publish the bearer token or secret routing address in a shared log.
-5. Interpret the response: 401 means token mismatch; 403 means sender rejection; 404 means no matching route; 413 means an oversized HTTP body; 429 means rate limiting; 503 means disconnected, unavailable or busy processing; 502 usually means conversion or sending failed.
+5. Interpret the response: 401 means token mismatch; 403 means sender rejection; 404 means no matching route; 413 means an oversized HTTP body; 422 means the delivery already gave up (`dead_letter`) and will not be retried automatically; 429 means rate limiting; 503 means disconnected, unavailable, busy processing or waiting for its scheduled retry; 502 usually means conversion or sending failed.
 6. Network failures, 408, 429 and 5xx remain eligible for retry. Other 4xx responses are recorded as terminal. Correct the cause and use a fresh scheduled delivery; do not erase the whole processed ledger to force a resend.
-7. A delivery stuck as `failed` or `processing` no longer needs a fresh scheduled delivery to retry it: a background worker automatically retries it on its own (with backoff) using the PDF it already has on file, until it either delivers or exhausts its attempts and becomes `dead_letter`. Check the admin dashboard's deliveries table - a `dead_letter` entry with its last error means the automatic retries are done and the cause needs to be fixed manually (for example, a removed route) before a fresh delivery will succeed.
+7. A delivery stuck as `failed` or `processing` does not need a fresh scheduled delivery: the background worker retries it with backoff from the stored PDF until it delivers or exhausts its attempts and becomes `dead_letter`. A WhatsApp disconnect in the middle of sending does not use up an attempt. A `dead_letter` entry in the dashboard shows the last error; fix the cause (for example, re-add the bot to the group or restore a removed route), then press **Retry**.
 
 The bridge searches read and unread mail. It scans recent threads in pages of fifty, up to five hundred by default. Gmail thread labels `Looker Report Bot/Forwarded` and `Looker Report Bot/Rejected` are informational; a conversation may contain several messages with different outcomes. The labels are not used to exclude whole conversations.
+
+Chat IDs may end in `@g.us` (groups, including older `123-456@g.us` IDs), `@s.whatsapp.net` or `@c.us` (phone numbers) or `@lid` (WhatsApp's privacy identifiers). The dashboard, the API and `STUDIO_ROUTE_ADMIN_IDS` accept all of them, and admin checks recognise a person by either their phone-number ID or their LID.
 
 An active processing lease receives a retryable response. If the service dies, a subsequent bridge attempt can reclaim it after the lease expires (ten minutes in the supplied deployment configuration). Saved successful pages and completed chats are skipped on retry. An ambiguous WhatsApp acknowledgement can still cause one repeated page.
 

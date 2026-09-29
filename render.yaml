@@ -75,3 +75,7 @@ services:
         value: "60000"
       - key: STUDIO_DELIVERY_WORKER_INTERVAL_MS
         value: "60000"
+      - key: STUDIO_ALERT_CHAT_ID
+        sync: false
+      - key: STUDIO_DEAD_LETTER_RETENTION_MS
+        value: "604800000"
