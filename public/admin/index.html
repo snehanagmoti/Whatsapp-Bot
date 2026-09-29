@@ -115,7 +115,7 @@
   <div id="loginScreen" class="card">
     <h1 style="margin-bottom:6px">WhatsApp Report Bot</h1>
     <p class="muted" style="margin-top:0">Enter the admin dashboard token to manage report routes and check WhatsApp status.</p>
-    <div id="loginError" class="banner error" hidden></div>
+    <div id="loginError" role="alert"></div>
     <label for="tokenInput">Admin token</label>
     <input id="tokenInput" type="password" autocomplete="off" placeholder="Paste STUDIO_ADMIN_TOKEN">
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
@@ -288,9 +288,33 @@
     pollTimer = setInterval(refreshAll, 15000);
   }
 
-  el.loginBtn.addEventListener('click', function () {
+  el.loginBtn.addEventListener('click', async function () {
     var value = el.tokenInput.value.trim();
     if (!value) { showBanner(el.loginError, 'Enter the admin token.', 'error'); return; }
+    // Check the token before showing the dashboard, so a wrong token shows a
+    // clear message instead of flashing the dashboard and bouncing back.
+    el.loginBtn.disabled = true;
+    showBanner(el.loginError, 'Checking token…', 'info');
+    try {
+      var response = await fetch('/admin/api/status', { headers: { Authorization: 'Bearer ' + value } });
+      if (response.status === 401) {
+        showBanner(el.loginError, 'That token was rejected. Copy the value of STUDIO_ADMIN_TOKEN from Render → Environment and paste it again.', 'error');
+        return;
+      }
+      if (response.status === 429) {
+        showBanner(el.loginError, 'Too many attempts. Wait a minute and try again.', 'error');
+        return;
+      }
+      if (!response.ok) {
+        showBanner(el.loginError, 'The service answered HTTP ' + response.status + '. Try again shortly.', 'error');
+        return;
+      }
+    } catch (error) {
+      showBanner(el.loginError, 'Could not reach the service (it may be waking up). Try again in a few seconds.', 'error');
+      return;
+    } finally {
+      el.loginBtn.disabled = false;
+    }
     token = value;
     (el.rememberToken.checked ? localStorage : sessionStorage).setItem(STORAGE_KEY, value);
     showBanner(el.loginError, '', 'error');
