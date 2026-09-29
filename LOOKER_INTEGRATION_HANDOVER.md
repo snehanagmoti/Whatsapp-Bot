@@ -1,10 +1,10 @@
-# Looker Studio to WhatsApp Handover - v1.1.0
+# Looker Studio to WhatsApp Handover - v1.5.0
 
 ## Release status
 
-The repository contains v1.1.0 and regression coverage for the routing, delivery, Gmail bridge, session, request and PDF issues found during review. The local suite passed 69 tests with no failures or skips. Confirm the running commit and fresh scheduled-delivery outcome at release time; this document does not certify that the hosted service or live Apps Script has already been updated.
+The repository contains v1.5.0 with regression coverage for the routing, delivery, Gmail bridge, session, request and PDF behaviour: 141 unit tests plus 11 MongoDB integration tests that CI runs against a real MongoDB server. Confirm the running commit (`/versionz`) and a fresh scheduled-delivery outcome at release time; this document does not certify that the hosted service or live Apps Script has already been updated.
 
-Dependencies are exact pins in `package.json`/`package-lock.json`, not a claim that every package is the latest upstream release. The online audit/update lookup encountered registry connection resets during preparation. A clean dependency audit remains a separate release check.
+Dependencies are exact pins in `package.json`/`package-lock.json`, not a claim that every package is the latest upstream release. CI runs a production dependency audit on every pull request.
 
 ## How the implementation works
 
@@ -32,6 +32,11 @@ The same ingested email may reach multiple active chats. Separate copies with di
 - Route deletion requires `!removereport <name> --confirm`. The default quota is twenty routes per chat.
 - Request rate/concurrency/body limits and PDF page/geometry/pixel limits are enforced. A disconnected HTTP client does not release its processing slot prematurely.
 - `/versionz` reports version/commit; `/healthz` reports liveness; `/readyz` returns 200 only while WhatsApp is connected.
+- Dead-lettered deliveries are terminal at ingest (HTTP 422), keep their PDF for seven days, can be retried from the dashboard and trigger a WhatsApp alert when `STUDIO_ALERT_CHAT_ID` is set.
+- Background retries work against MongoDB (v1.5.0 fixed stored PDFs being returned as BSON Binary) and share one backoff schedule with bridge retries; mid-send WhatsApp disconnects do not use up attempts.
+- Each email's PDF is stored once for all destination chats.
+- Signal key material is redacted from logs; logout recovery offers a fresh QR without a restart; LID chat IDs are accepted.
+- The Gmail bridge (v1.3.0) checkpoints its ledger, bounds its runtime and, by default, pings `/healthz` so Render's free tier does not sleep.
 
 ## Configuration owners must preserve
 
@@ -43,6 +48,7 @@ The same ingested email may reach multiple active chats. Separate copies with di
 - `WA_AUTH_ENCRYPTION_KEY` must remain stable once records are encrypted. Retain it securely with recovery procedures; do not regenerate it on normal deploys.
 - `STUDIO_ALLOWED_SENDERS` defaults in application startup to `data-studio-noreply@google.com`. Verify tenant senders before modifying it.
 - Preserve the existing `FORWARD_NOT_BEFORE` cutover during bridge upgrades; missing values initialize to now and avoid historical replay.
+- Optional: `STUDIO_ALERT_CHAT_ID` (dead-letter alerts), `STUDIO_DEAD_LETTER_RETENTION_MS` (retry window, default 7 days), and the bridge's `KEEP_SERVICE_AWAKE` (default true; mind Render's 750 free hours per workspace).
 
 See `.env.example`, `render.yaml` and [README.md](./README.md) for all limits/defaults. A Blueprint source change does not prove an existing hosted environment received every new variable.
 
@@ -50,14 +56,14 @@ See `.env.example`, `render.yaml` and [README.md](./README.md) for all limits/de
 
 1. Run `npm run check`, `npm test` and `npm audit --omit=dev` with Node.js 22-24 and Poppler installed. Review CI and audit findings.
 2. Commit/push the release and verify the deployed version/commit at `/versionz`.
-3. Confirm required deployed variables and `/readyz`; relink only if WhatsApp needs it.
+3. Confirm required deployed variables and `/readyz`; relink only if WhatsApp needs it. Render deploys are manual unless Auto-Deploy is enabled for the service.
 4. Save the canonical Apps Script source with a preserved cutoff and matching secrets. Keep one five-minute forwarding trigger.
 5. Schedule a fresh small report in a controlled chat after the cutoff; inspect the Gmail receipt, forwarding log and WhatsApp pages.
 6. Test two destinations, replay of the same message ID, busy claims, pauses, a later-page failure and reconnect recovery before broader use.
 
 ## Boundaries and handoff
 
-The implemented controls support a controlled pilot. Production still requires approved WhatsApp transport, dedicated identities, reliable infrastructure, backup/restore, managed secrets, privacy/retention decisions, malware scanning where required, monitoring and company-tenant acceptance. As of v1.3.0, failed or stuck deliveries retry automatically with backoff and dead-letter after exhausting their attempts (see RISKS_AND_LIMITATIONS.md); a separate worker process and message-broker-style queueing are still needed for workloads that exceed one instance's synchronous request capacity.
+The implemented controls support a controlled pilot. Production still requires approved WhatsApp transport, dedicated identities, reliable infrastructure, backup/restore, managed secrets, privacy/retention decisions, malware scanning where required, monitoring and company-tenant acceptance. Failed or stuck deliveries retry automatically with backoff, dead-letter after exhausting their attempts, alert an admin chat and can be retried from the dashboard (see RISKS_AND_LIMITATIONS.md); a separate worker process and message-broker-style queueing are still needed for workloads that exceed one instance's synchronous request capacity.
 
 The optional authenticated Action Hub endpoints support a separate full-Looker path; Looker Studio scheduled emails do not use them. Browser cookies, passwords, private-report login and Puppeteer screenshots are outside this implementation.
 

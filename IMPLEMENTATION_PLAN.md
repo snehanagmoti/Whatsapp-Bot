@@ -1,4 +1,4 @@
-# Implementation and Rollout Plan - v1.1.0
+# Implementation and Rollout Plan - v1.5.0
 
 ## Objective
 
@@ -39,12 +39,19 @@ Looker Studio sends PDF email
 - A five-minute Gmail bridge with 50-thread pagination, default 500-thread cap, seven-day lookback, 2,000-ID ledger, cutover control, outcome logging and retryable/permanent HTTP classification.
 - Exact package versions, Node.js 22-24 engine range, CI and a version/commit endpoint.
 
-The local release suite passed 69 tests without failures or skips. These checks do not substitute for deployment verification or the user's fresh scheduled-delivery test.
+Added since v1.1.0:
+
+- v1.2.0-v1.3.0: admin dashboard; durable retry worker with backoff and dead-lettering.
+- v1.3.1: dead letters terminal at ingest (422); one backoff schedule for bridge and worker retries; mid-send WhatsApp disconnects do not consume attempts; IP-keyed pre-authentication rate limits; leaner delivery listing; logout recovery with a fresh QR; bridge ledger checkpoints and runtime budget; MongoDB integration tests in CI.
+- v1.4.0: Signal key material redacted from logs; batched and cached key store; group-metadata and re-send caches; LID chat IDs.
+- v1.5.0: background retries fixed for PDFs read back from MongoDB; one stored PDF per email; dashboard Retry for dead letters; dead-letter alerts to a WhatsApp chat; bridge keep-awake ping for Render's free tier.
+
+The v1.5.0 suite passed 141 unit tests; CI adds 11 MongoDB integration tests against a real server. These checks do not substitute for deployment verification or the user's fresh scheduled-delivery test.
 
 ## Synchronize the release
 
 1. Run syntax checks and the regression suite with Poppler installed. Run the production dependency audit when registry access is available; the preparation attempt hit connection resets.
-2. Review the diff, commit v1.1.0 and push the intended deployment branch without overwriting unrelated changes.
+2. Review the diff, merge the release through a pull request with passing CI, and deploy it (Render deploys are manual unless Auto-Deploy is enabled).
 3. Verify the deployed environment against `.env.example` and `render.yaml`. Preserve the effective ingestion token, route pepper, database/session identity and encryption key.
 4. Confirm the live `/versionz` version and commit match the release; confirm `/readyz` returns HTTP 200. `/healthz` alone is insufficient.
 5. Preserve the existing bridge cutover in Script Property `FORWARD_NOT_BEFORE` when upgrading. A missing property initializes to now; a direct first run deliberately does no forwarding.
@@ -68,7 +75,7 @@ The local release suite passed 69 tests without failures or skips. These checks 
 - Assign a company-owned WhatsApp number, reporting mailbox, administrators and recovery ownership.
 - Use always-on compute and production database backups, restore testing and monitored capacity.
 - ~~Introduce a durable queue and workers for workloads that cannot fit synchronous HTTP requests.~~ Partially addressed in v1.3.0: a background worker now retries failed/stuck deliveries with backoff and moves exhausted ones to a terminal `dead_letter` status (see RISKS_AND_LIMITATIONS.md). Still missing: a separate worker process/dyno, horizontally scaled workers, and true message-broker-style queueing for workloads that exceed one instance's synchronous request capacity.
-- Add malware/content scanning, centralized alerts, delivery visibility and audited administration as required by company reports.
+- Add malware/content scanning, external monitoring and audited administration as required by company reports. (Dead-letter alerts to a WhatsApp chat and dashboard delivery visibility exist since v1.5.0.)
 - Apply managed secret storage, access review and documented key/pepper rotation and account-recovery procedures.
 - Define confidential-data, destination, retention and incident-response policies.
 - Replace polling with Gmail API notifications or supported inbound email when volume or latency requires it.

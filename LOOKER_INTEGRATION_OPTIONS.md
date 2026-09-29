@@ -1,4 +1,4 @@
-# Integration Options - v1.1.0
+# Integration Options - v1.5.0
 
 ## Current Looker Studio path
 
@@ -38,7 +38,7 @@ Evaluate the official WhatsApp Business Platform against the actual destination 
 
 ## Production deployment choice
 
-The supplied Render configuration is a free-tier pilot. It limits concurrent ingestion and PDF resource usage, stores routing/delivery state in MongoDB, and exposes version/readiness checks. It does not provide an always-on guarantee or a durable job queue.
+The supplied Render configuration is a free-tier pilot. It limits concurrent ingestion and PDF resource usage, stores routing/delivery state in MongoDB, and exposes version/readiness checks. Free web services sleep after 15 minutes without inbound traffic; the Gmail bridge's keep-awake ping (default on) prevents that within Render's 750 free instance hours per workspace per month. It is still not an always-on guarantee: platform restarts, free-tier limits and suspension when the hours run out remain possible. A paid always-on instance (or another always-on host) removes the dependency on the ping and the hour budget; that is a cost decision for the service owner.
 
 Production options include always-on compute, managed secret storage, database backup/restore, durable workers, centralized alerts and report-content scanning. These require operational decisions and are recorded as remaining work, not code defects silently claimed fixed.
 

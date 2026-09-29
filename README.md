@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.4.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.5.0** delivers scheduled Looker Studio PDFs as images to approved WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,17 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.5.0 changes
+
+No data migration; existing routes, WhatsApp credentials, secrets and delivery records keep working.
+
+- **Fix: background retries against MongoDB.** Since v1.3.0 the delivery worker received the stored PDF from MongoDB as a BSON `Binary`, which the PDF renderer rejects, so every worker retry failed and only bridge re-sends recovered a delivery. Stored PDFs are now read back as Buffers, and integration tests use a renderer stand-in that rejects anything else.
+- **One stored PDF per email.** The source PDF is saved once in `studio_pdfs` and every destination chat's delivery references it, instead of one copy per destination. It is deleted when no delivery needs it (30-day TTL backstop).
+- **Retry from the dashboard.** A delivery that gave up keeps its PDF for `STUDIO_DEAD_LETTER_RETENTION_MS` (default 7 days); the dashboard's deliveries table shows a **Retry** button that requeues it with a fresh attempt budget (`POST /admin/api/deliveries/retry`).
+- **Dead-letter alerts.** Set `STUDIO_ALERT_CHAT_ID` to a WhatsApp chat ID (for example an admin group from `!chatid`) to receive a message whenever a delivery gives up. Alerts are rate-limited and always logged.
+- **Keep-awake for Render's free tier (Gmail bridge v1.3.0).** Each five-minute bridge run pings `/healthz` so the service does not spin down after 15 idle minutes, keeping the retry worker and WhatsApp connection running. Controlled by the Script Property `KEEP_SERVICE_AWAKE` (default true). One always-on service uses at most 744 of the 750 free instance hours Render grants per workspace each month.
+- Documentation refreshed for v1.3.1-v1.5.0. 141 unit tests and 11 MongoDB integration tests.
 
 ## Release 1.4.0 changes
 
@@ -112,6 +123,8 @@ STUDIO_MAX_TOTAL_PIXELS=20000000
 STUDIO_DELIVERY_MAX_ATTEMPTS=6
 STUDIO_DELIVERY_RETRY_BASE_MS=60000
 STUDIO_DELIVERY_WORKER_INTERVAL_MS=60000
+STUDIO_DEAD_LETTER_RETENTION_MS=604800000
+STUDIO_ALERT_CHAT_ID=            (optional: WhatsApp chat for dead-letter alerts)
 ```
 
 The lease is ten minutes in the supplied environment/Blueprint; the store's fallback without that variable is fifteen minutes. The PDF renderer reduces DPI when necessary to stay within the pixel cap and rejects documents beyond configured limits instead of silently dropping pages.
@@ -135,15 +148,15 @@ Run setup in the intended destination chat. The QR link is a one-time operator t
 
 ## Admin dashboard
 
-Operators managing routes across several chats can use the web dashboard at `/admin/` instead of WhatsApp commands one chat at a time: WhatsApp link status (with the linking QR code inline), create/pause/resume/rotate/remove for every route the bot knows about, and recent delivery outcomes per chat - including any that reached a terminal `dead_letter` state after exhausting their retries. It is protected by its own `STUDIO_ADMIN_TOKEN` bearer secret, separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`. See [USAGE_GUIDE.md](./USAGE_GUIDE.md#admin-dashboard) for setup and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#admin-dashboard) for its security model.
+Operators managing routes across several chats can use the web dashboard at `/admin/` instead of WhatsApp commands one chat at a time: WhatsApp link status (with the linking QR code inline), create/pause/resume/rotate/remove for every route the bot knows about, and recent delivery outcomes per chat - including any that reached a terminal `dead_letter` state after exhausting their retries, with a **Retry** button while their PDF is still stored. It is protected by its own `STUDIO_ADMIN_TOKEN` bearer secret, separate from `QR_SETUP_TOKEN` and `STUDIO_INGEST_TOKEN`. See [USAGE_GUIDE.md](./USAGE_GUIDE.md#admin-dashboard) for setup and [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#admin-dashboard) for its security model.
 
 ## Delivery retries and dead-lettering
 
-Every claimed delivery keeps its own copy of the source PDF until it either delivers or is permanently abandoned. A failed attempt - or one where the process crashed mid-send, leaving it stuck past its lease - is automatically picked back up by a background worker running inside the same service, on a fixed interval (`STUDIO_DELIVERY_WORKER_INTERVAL_MS`, default 60s), with exponential backoff between attempts (`STUDIO_DELIVERY_RETRY_BASE_MS`, doubling, capped at 30 minutes) up to `STUDIO_DELIVERY_MAX_ATTEMPTS` (default 6). This does not depend on Apps Script or Gmail resending the email. Once attempts are exhausted the delivery becomes `dead_letter`: terminal, visible with its last error in the admin dashboard, and its stored PDF bytes are released. See [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#delivery-retries-and-dead-lettering) for what this does and does not cover.
+Each email's source PDF is stored once and shared by its destination deliveries until they deliver (or, for dead letters, until the retention window ends). A failed attempt - or one where the process crashed mid-send, leaving it stuck past its lease - is automatically picked back up by a background worker running inside the same service, on a fixed interval (`STUDIO_DELIVERY_WORKER_INTERVAL_MS`, default 60s), with exponential backoff between attempts (`STUDIO_DELIVERY_RETRY_BASE_MS`, doubling, capped at 30 minutes) up to `STUDIO_DELIVERY_MAX_ATTEMPTS` (default 6). This does not depend on Apps Script or Gmail resending the email. Once attempts are exhausted the delivery becomes `dead_letter`: it is not retried automatically, the ingest endpoint answers 422 for it, it stays visible with its last error in the admin dashboard, an optional WhatsApp alert is sent, and an operator can press **Retry** within the retention window. See [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md#delivery-retries-and-dead-lettering) for what this does and does not cover.
 
 ## Verification and release status
 
-The local release suite passed **126 unit tests with no failures**; the 9 MongoDB integration tests are skipped unless `MONGODB_TEST_URI` is set (CI runs them against `mongo:7`). Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
+The local release suite passed **141 unit tests with no failures**; the 11 MongoDB integration tests are skipped unless `MONGODB_TEST_URI` is set (CI runs them against `mongo:7`). Coverage includes route authorization/lifecycle, multiple destinations, failed-page retries, stale/busy claims, pause handling, session encryption, command replay protection, HTTP limits, Apps Script outcomes, the admin dashboard API, delivery retry/backoff/dead-lettering and real Poppler rendering. Tests use controlled or mocked external services; they do not prove current Gmail, Render or WhatsApp delivery.
 
 Run with Node.js 22-24 and Poppler (`pdfinfo` and `pdftoppm`) installed:
 
