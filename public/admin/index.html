@@ -197,7 +197,8 @@
     </div>
 
     <p class="footer-note">
-      These routes can also be managed from WhatsApp with <span class="mono">!help</span>.
+      These routes can also be managed from WhatsApp with <span class="mono">!help</span>, and anyone in a chat can manage
+      that chat's reports at <a href="/chat/">/chat/</a> using its chat ID.
       Route addresses are shown only once, right after creating or rotating a route — the server never stores or displays them again.
     </p>
   </div>
@@ -209,6 +210,9 @@
   var STORAGE_KEY = 'studioAdminToken';
   var token = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || '';
   var pollTimer = null;
+  // While WhatsApp is unlinked the QR is reloaded every few seconds, because
+  // WhatsApp replaces it about every 20 seconds and an old one cannot be scanned.
+  var qrTimer = null;
 
   var el = {
     loginScreen: document.getElementById('loginScreen'),
@@ -275,6 +279,7 @@
     localStorage.removeItem(STORAGE_KEY);
     token = '';
     if (pollTimer) clearInterval(pollTimer);
+    stopQrTimer();
     el.dashboard.hidden = true;
     el.loginScreen.hidden = false;
     showBanner(el.loginError, message || '', 'error');
@@ -331,23 +336,34 @@
       el.versionLine.textContent = 'v' + status.version + (status.commit ? ' (' + status.commit.slice(0, 7) + ')' : '')
         + ' · Studio routing ' + (status.studioConfigured ? 'configured' : 'not configured');
       el.qrPanel.hidden = Boolean(status.whatsappReady);
-      if (!status.whatsappReady) await refreshQr();
+      if (status.whatsappReady) {
+        stopQrTimer();
+      } else {
+        await refreshQr();
+        if (!qrTimer) qrTimer = setInterval(refreshQr, 4000);
+      }
     } catch (error) {
       if (error.message !== 'Unauthorized') showBanner(el.globalBanner, 'Could not load status: ' + error.message, 'error');
     }
+  }
+
+  function stopQrTimer() {
+    if (qrTimer) clearInterval(qrTimer);
+    qrTimer = null;
   }
 
   async function refreshQr() {
     try {
       var response = await fetch('/admin/api/qr.svg', { headers: { Authorization: 'Bearer ' + token } });
       if (response.status === 425) { el.qrStatusLine.textContent = 'Waiting for a fresh QR code…'; return; }
-      if (response.status === 409) { el.qrStatusLine.textContent = 'Connected — refresh status.'; return; }
+      if (response.status === 409) { stopQrTimer(); refreshStatus(); return; }
+      if (response.status === 401) { logout('Session token was rejected. Enter it again.'); return; }
       if (!response.ok) { el.qrStatusLine.textContent = 'Could not load the QR code.'; return; }
       var blob = await response.blob();
       var old = el.qrImage.src;
       el.qrImage.src = URL.createObjectURL(blob);
       if (old) URL.revokeObjectURL(old);
-      el.qrStatusLine.textContent = 'Scan within 60 seconds — it refreshes automatically.';
+      el.qrStatusLine.textContent = 'Scan it now: it updates every few seconds, so a new one appears if this one expires.';
     } catch (e) {
       el.qrStatusLine.textContent = 'Could not load the QR code.';
     }

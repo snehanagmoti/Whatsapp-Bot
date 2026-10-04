@@ -7,6 +7,15 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+// A PDF that breaks a limit or is not a readable PDF will fail the same way on
+// every retry, so these errors are marked permanent and the delivery gives up
+// at once (and the chat is told why) instead of retrying for half an hour.
+function rejectPdf(message) {
+    const error = new Error(message);
+    error.permanent = true;
+    return error;
+}
+
 function commandBeside(command, executable) {
     const directory = path.dirname(command);
     if (directory === '.') return executable;
@@ -17,7 +26,7 @@ function commandBeside(command, executable) {
 function parsePdfInfo(output) {
     const text = String(output || '');
     const countMatch = /^Pages:\s+(\d+)\s*$/im.exec(text);
-    if (!countMatch) throw new Error('PDF metadata does not contain a page count.');
+    if (!countMatch) throw rejectPdf('PDF metadata does not contain a page count.');
 
     const pageCount = Number(countMatch[1]);
     const pageSizes = [];
@@ -69,9 +78,9 @@ async function inspectPdf(input, {
     }
 
     const { pageCount } = parsePdfInfo(summary.stdout);
-    if (pageCount < 1) throw new Error('PDF does not contain any pages.');
+    if (pageCount < 1) throw rejectPdf('PDF does not contain any pages.');
     if (pageCount > maxPages) {
-        throw new Error(`PDF has ${pageCount} pages, which exceeds the configured limit of ${maxPages}.`);
+        throw rejectPdf(`PDF has ${pageCount} pages, which exceeds the configured limit of ${maxPages}.`);
     }
 
     let details;
@@ -87,15 +96,15 @@ async function inspectPdf(input, {
 
     const metadata = parsePdfInfo(details.stdout);
     if (metadata.pageSizes.length !== pageCount) {
-        throw new Error('PDF metadata is missing page dimensions.');
+        throw rejectPdf('PDF metadata is missing page dimensions.');
     }
     metadata.pageSizes.forEach((pageSize, index) => {
         if (!Number.isFinite(pageSize.width) || !Number.isFinite(pageSize.height) ||
             pageSize.width <= 0 || pageSize.height <= 0) {
-            throw new Error(`PDF page ${index + 1} has invalid dimensions.`);
+            throw rejectPdf(`PDF page ${index + 1} has invalid dimensions.`);
         }
         if (pageSize.width > maxPageDimensionPoints || pageSize.height > maxPageDimensionPoints) {
-            throw new Error(`PDF page ${index + 1} exceeds the configured geometry limit.`);
+            throw rejectPdf(`PDF page ${index + 1} exceeds the configured geometry limit.`);
         }
     });
     return metadata;
@@ -114,7 +123,7 @@ async function convertPdfToPngPages(pdfBuffer, options = {}) {
     const runCommand = options.runCommand || execFileAsync;
 
     if (!Buffer.isBuffer(pdfBuffer) || pdfBuffer.subarray(0, 5).toString() !== '%PDF-') {
-        throw new Error('Attachment is not a valid PDF.');
+        throw rejectPdf('Attachment is not a valid PDF.');
     }
     validateInteger(maxPages, 'Maximum page count', 1, 20);
     validateInteger(dpi, 'PDF rendering DPI', 72, 300);
@@ -123,7 +132,7 @@ async function convertPdfToPngPages(pdfBuffer, options = {}) {
     validateInteger(maxPageDimensionPoints, 'Maximum PDF page dimension', 72, 50000);
     validateInteger(maxPageDimensionPixels, 'Maximum rendered page dimension', 256, 4096);
     validateInteger(maxTotalPixels, 'Maximum total rendered pixels', 1024 * 1024, 50 * 1000 * 1000);
-    if (pdfBuffer.length > maxPdfBytes) throw new Error('PDF exceeds the configured attachment size limit.');
+    if (pdfBuffer.length > maxPdfBytes) throw rejectPdf('PDF exceeds the configured attachment size limit.');
 
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-report-'));
     const input = path.join(directory, 'report.pdf');
@@ -144,12 +153,12 @@ async function convertPdfToPngPages(pdfBuffer, options = {}) {
             const width = Math.ceil(pageSize.width * renderDpi / 72);
             const height = Math.ceil(pageSize.height * renderDpi / 72);
             if (width > maxPageDimensionPixels || height > maxPageDimensionPixels) {
-                throw new Error('PDF cannot be rendered within the configured pixel dimensions.');
+                throw rejectPdf('PDF cannot be rendered within the configured pixel dimensions.');
             }
             estimatedPixels += width * height;
         });
         if (estimatedPixels > maxTotalPixels) {
-            throw new Error('PDF exceeds the configured total rendered-pixel limit.');
+            throw rejectPdf('PDF exceeds the configured total rendered-pixel limit.');
         }
 
         try {
@@ -178,7 +187,7 @@ async function convertPdfToPngPages(pdfBuffer, options = {}) {
             if (!stats.isFile() || stats.size < PNG_SIGNATURE.length) {
                 throw new Error(`Rendered page ${file} is not a valid file.`);
             }
-            if (stats.size > maxImageBytes) throw new Error(`Rendered page ${file} is too large for WhatsApp.`);
+            if (stats.size > maxImageBytes) throw rejectPdf(`Rendered page ${file} is too large for WhatsApp.`);
             const image = await fs.readFile(pagePath);
             let dimensions;
             try {
@@ -188,10 +197,10 @@ async function convertPdfToPngPages(pdfBuffer, options = {}) {
             }
             if (!dimensions.width || !dimensions.height ||
                 dimensions.width > maxPageDimensionPixels || dimensions.height > maxPageDimensionPixels) {
-                throw new Error(`Rendered page ${file} exceeds the configured pixel dimensions.`);
+                throw rejectPdf(`Rendered page ${file} exceeds the configured pixel dimensions.`);
             }
             actualTotalPixels += dimensions.width * dimensions.height;
-            if (actualTotalPixels > maxTotalPixels) throw new Error('Rendered pages exceed the configured total-pixel limit.');
+            if (actualTotalPixels > maxTotalPixels) throw rejectPdf('Rendered pages exceed the configured total-pixel limit.');
             pages.push(image);
         }
         return pages;

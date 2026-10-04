@@ -132,7 +132,8 @@ class StudioDeliveryWorker {
             // mid-send. Such an interruption does not consume an attempt.
             const outcome = await this.store.failDelivery(messageId, chatId, error.message || error, {
                 claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs,
-                countAttempt: Boolean(this.isClientReady())
+                countAttempt: Boolean(this.isClientReady()),
+                terminal: Boolean(error && error.permanent)
             });
             this.log.warn(`Studio delivery worker: retry failed for ${chatId} (message ${messageId}): ${error.message || error}`);
             if (outcome === 'dead_letter') await this.notifyDeadLetter(delivery, error.message || String(error));

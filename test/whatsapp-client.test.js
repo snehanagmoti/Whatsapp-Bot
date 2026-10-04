@@ -335,27 +335,6 @@ test('image pages can be sent from a Buffer without a base64 round-trip', async 
     assert.equal(sockets[0].sent[0][1].caption, 'Sales');
 });
 
-test('group admin checks match LID and phone-number identities, ignoring device suffixes', async () => {
-    const { client, sockets } = createHarness({
-        groupMetadata: jid => ({
-            id: jid,
-            participants: [
-                { id: '111@lid', phoneNumber: '919800000001@s.whatsapp.net', admin: 'admin' },
-                { id: '222@lid', phoneNumber: '919800000002@s.whatsapp.net', admin: null },
-                { id: '919800000003@s.whatsapp.net', admin: 'superadmin' }
-            ]
-        })
-    });
-    await client.initialize();
-    sockets[0].ev.emit('connection.update', { connection: 'open' });
-    assert.equal(await client.isGroupAdmin('123@g.us', '111@lid'), true);
-    assert.equal(await client.isGroupAdmin('123@g.us', ['999@lid', '919800000001@s.whatsapp.net']), true, 'matched through the alternate id');
-    assert.equal(await client.isGroupAdmin('123@g.us', '919800000003:7@s.whatsapp.net'), true, 'device suffix ignored');
-    assert.equal(await client.isGroupAdmin('123@g.us', '222@lid'), false);
-    assert.equal(await client.isGroupAdmin('123@g.us', []), false);
-    assert.equal(sockets[0].metadataCalls, 1, 'admin checks share the metadata cache');
-});
-
 test('command payloads carry the sender\'s alternate identity', async () => {
     const events = [];
     const { client, sockets } = createHarness();

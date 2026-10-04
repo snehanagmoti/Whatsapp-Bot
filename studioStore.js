@@ -75,10 +75,12 @@ function computeRetryBackoffMs(attempts, retryBaseMs) {
 // failure that was not a real delivery attempt (for example releasing a claim
 // that never sent anything): the attempt is refunded and can never
 // dead-letter the delivery. `retryDelayMs` overrides the exponential backoff.
-function failurePlan(attempts, now, { maxAttempts, retryBaseMs, countAttempt = true, retryDelayMs } = {}, uncountedFailures = 0) {
+// `terminal: true` is for a failure that can never succeed on retry (for
+// example a PDF over the page limit): it gives up straight away.
+function failurePlan(attempts, now, { maxAttempts, retryBaseMs, countAttempt = true, retryDelayMs, terminal = false } = {}, uncountedFailures = 0) {
     const used = Number(attempts || 0);
     const counted = countAttempt || Number(uncountedFailures || 0) >= MAX_UNCOUNTED_FAILURES;
-    const exhausted = counted && used >= normalizeMaxDeliveryAttempts(maxAttempts);
+    const exhausted = Boolean(terminal) || (counted && used >= normalizeMaxDeliveryAttempts(maxAttempts));
     const refund = !counted && used > 0;
     const delayMs = Number.isFinite(retryDelayMs) && retryDelayMs >= 0
         ? Math.floor(retryDelayMs)

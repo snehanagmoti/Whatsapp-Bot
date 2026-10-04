@@ -25,13 +25,6 @@ function normalizeJid(jid) {
     return `${user}@${server}`;
 }
 
-function sameIdentity(candidates, participant) {
-    const wanted = new Set(candidates.filter(Boolean).map(normalizeJid));
-    return [participant.id, participant.phoneNumber, participant.lid, participant.jid]
-        .filter(Boolean)
-        .some(jid => wanted.has(normalizeJid(jid)));
-}
-
 function unwrapMessage(message) {
     let current = message;
     while (current && (current.ephemeralMessage || current.viewOnceMessage || current.viewOnceMessageV2)) {
@@ -405,16 +398,6 @@ class WhatsAppClient extends EventEmitter {
         const metadata = await this.socket.groupMetadata(chatId);
         if (metadata) this.groupMetadata.set(chatId, metadata);
         return metadata;
-    }
-
-    // `senderIds` may list one person under several identities (LID and
-    // phone-number JID); any match counts.
-    async isGroupAdmin(chatId, senderIds) {
-        const candidates = [].concat(senderIds || []).filter(Boolean);
-        if (!this.ready || !this.socket || !chatId.endsWith('@g.us') || !candidates.length) return false;
-        const metadata = await this.groupMetadataFor(chatId);
-        const participant = ((metadata && metadata.participants) || []).find(item => sameIdentity(candidates, item));
-        return Boolean(participant && (participant.admin === 'admin' || participant.admin === 'superadmin'));
     }
 
     rememberSent(result) {

@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>WhatsApp Report Bot — My chat</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f7f8;
+    --card: #ffffff;
+    --text: #172b24;
+    --muted: #5b6b66;
+    --border: #e1e6e4;
+    --accent: #0f7a5c;
+    --accent-contrast: #ffffff;
+    --danger: #a62929;
+    --warn: #9a6b00;
+    --active: #0f7a5c;
+    --paused: #9a6b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101613;
+      --card: #1a2320;
+      --text: #eaf2ee;
+      --muted: #9fb0ab;
+      --border: #2b3733;
+      --accent: #35c890;
+      --accent-contrast: #06231a;
+      --danger: #ff8a80;
+      --warn: #e3b341;
+      --active: #35c890;
+      --paused: #e3b341;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  h1 { font-size: 1.25rem; margin: 0; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .badge.ok { color: var(--active); border-color: var(--active); }
+  .badge.warn { color: var(--paused); border-color: var(--paused); }
+  .badge.off { color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); padding: 7px 12px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.small { padding: 4px 9px; font-size: 0.82rem; }
+  input, select {
+    font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); width: 100%;
+  }
+  label { font-size: 0.82rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .row > * { flex: 1; min-width: 160px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  tr:last-child td { border-bottom: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  .muted { color: var(--muted); }
+  .status-active { color: var(--active); font-weight: 600; }
+  .status-paused { color: var(--paused); font-weight: 600; }
+  .status-delivered { color: var(--active); }
+  .status-processing { color: var(--muted); }
+  .status-failed { color: var(--danger); }
+  .status-dead_letter { color: var(--danger); font-weight: 600; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { color: var(--muted); padding: 12px 0; font-size: 0.9rem; }
+  .banner {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 0.88rem;
+    border: 1px solid var(--border);
+  }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
+  .banner.success { border-color: var(--active); color: var(--active); }
+  .secret-box {
+    font-family: ui-monospace, monospace; word-break: break-all; background: var(--bg);
+    border: 1px dashed var(--border); border-radius: 8px; padding: 10px; margin: 8px 0;
+  }
+  #qrPanel { text-align: center; }
+  #qrPanel img { width: min(260px, 70vw); height: auto; image-rendering: pixelated; margin: 8px auto; display: block; }
+  #loginScreen { max-width: 420px; margin: 10vh auto 0; }
+  [hidden] { display: none !important; }
+  .footer-note { color: var(--muted); font-size: 0.78rem; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="loginScreen" class="card">
+    <h1 style="margin-bottom:6px">My chat's reports</h1>
+    <p class="muted" style="margin-top:0">
+      Enter your WhatsApp chat ID to see and manage the Looker Studio reports sent to that chat.
+      Get it by sending <span class="mono">!chatid</span> in the chat.
+    </p>
+    <div id="loginError" role="alert"></div>
+    <label for="chatInput">WhatsApp chat ID</label>
+    <input id="chatInput" autocomplete="off" placeholder="120363000000000000@g.us">
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+      <button id="loginBtn" class="primary">Open</button>
+      <label style="display:flex; align-items:center; gap:6px; margin:0; font-size:0.82rem">
+        <input id="rememberChat" type="checkbox" style="width:auto"> Remember on this device
+      </label>
+    </div>
+  </div>
+
+  <div id="dashboard" hidden>
+    <header>
+      <div>
+        <h1>My chat's reports</h1>
+        <div class="mono muted" id="chatLine"></div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center">
+        <span id="waBadge" class="badge off"><span class="dot"></span> checking…</span>
+        <button id="logoutBtn" class="small">Change chat</button>
+      </div>
+    </header>
+
+    <div id="globalBanner"></div>
+
+    <div class="card">
+      <h2>Add a report</h2>
+      <div class="row">
+        <div>
+          <label for="newRouteName">Report name</label>
+          <input id="newRouteName" placeholder="Daily Sales" maxlength="80">
+        </div>
+        <div style="flex:0 0 auto; min-width:auto">
+          <button id="createRouteBtn" class="primary">Create</button>
+        </div>
+      </div>
+      <div id="newRouteResult"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <h2>Reports</h2>
+        <button id="refreshBtn" class="small">Refresh</button>
+      </div>
+      <div id="routesWrap"><p class="empty">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Recent deliveries</h2>
+      <div id="deliveriesWrap"><p class="empty">Loading…</p></div>
+    </div>
+
+    <p class="footer-note">
+      The same reports can be managed from WhatsApp with <span class="mono">!help</span>.
+      A report address is shown only once, right after creating or rotating it.
+    </p>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var STORAGE_KEY = 'studioChatId';
+  var chatId = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || '';
+  var pollTimer = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmtDate(value) {
+    if (!value) return '—';
+    var d = new Date(value);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+  function showBanner(target, message, kind) {
+    target.innerHTML = message ? '<div class="banner ' + (kind || 'error') + '">' + escapeHtml(message) + '</div>' : '';
+  }
+  function badge(status) {
+    return '<span class="status-' + escapeHtml(status) + '">' + escapeHtml(status) + '</span>';
+  }
+
+  async function api(path, options, idOverride) {
+    options = options || {};
+    var headers = Object.assign({ 'X-Chat-Id': idOverride || chatId }, options.body ? { 'Content-Type': 'application/json' } : {});
+    var response = await fetch(path, Object.assign({}, options, { headers: headers }));
+    var body = {};
+    try { body = await response.json(); } catch (e) { /* empty */ }
+    if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+    return body;
+  }
+  function post(path, payload) { return api(path, { method: 'POST', body: JSON.stringify(payload) }); }
+
+  function logout() {
+    sessionStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+    chatId = '';
+    if (pollTimer) clearInterval(pollTimer);
+    $('dashboard').hidden = true;
+    $('loginScreen').hidden = false;
+  }
+
+  function enterDashboard() {
+    $('loginScreen').hidden = true;
+    $('dashboard').hidden = false;
+    $('chatLine').textContent = chatId;
+    refreshAll();
+    pollTimer = setInterval(refreshAll, 30000);
+  }
+
+  $('loginBtn').addEventListener('click', async function () {
+    var value = $('chatInput').value.trim();
+    if (!value) { showBanner($('loginError'), 'Enter the chat ID.', 'error'); return; }
+    $('loginBtn').disabled = true;
+    try {
+      await api('/chat/api/routes', {}, value);
+      chatId = value;
+      ($('rememberChat').checked ? localStorage : sessionStorage).setItem(STORAGE_KEY, value);
+      showBanner($('loginError'), '', 'error');
+      enterDashboard();
+    } catch (error) {
+      showBanner($('loginError'), error.message, 'error');
+    } finally {
+      $('loginBtn').disabled = false;
+    }
+  });
+  $('chatInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('loginBtn').click(); });
+  $('logoutBtn').addEventListener('click', logout);
+  $('refreshBtn').addEventListener('click', refreshAll);
+
+  function showAddress(title, address) {
+    $('newRouteResult').innerHTML = '<div class="banner success">' + escapeHtml(title) + ' (shown once — keep it private):' +
+      '<div class="secret-box">' + escapeHtml(address) + '</div>' +
+      'Add this address as a recipient in the Looker Studio report\'s Schedule delivery.</div>';
+  }
+
+  async function act(fn, done) {
+    try { await fn(); if (done) showBanner($('globalBanner'), done, 'success'); loadRoutes(); }
+    catch (error) { showBanner($('globalBanner'), error.message, 'error'); }
+  }
+
+  function routeRow(route) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + escapeHtml(route.name) + '</td><td>' + badge(route.status) + '</td>' +
+      '<td class="muted">' + escapeHtml(fmtDate(route.updatedAt)) + '</td><td class="actions"></td>';
+    var actions = tr.querySelector('.actions');
+    function button(label, cls, handler) {
+      var b = document.createElement('button');
+      b.className = 'small ' + (cls || '');
+      b.textContent = label;
+      b.addEventListener('click', handler);
+      actions.appendChild(b);
+    }
+    var next = route.status === 'active' ? 'paused' : 'active';
+    button(route.status === 'active' ? 'Pause' : 'Resume', '', function () {
+      act(function () { return post('/chat/api/routes/status', { name: route.name, status: next }); },
+        route.name + (next === 'active' ? ' resumed.' : ' paused.'));
+    });
+    button('Rotate', '', function () {
+      if (!window.confirm('The current address of "' + route.name + '" stops working at once. You must put the new one into Looker Studio. Continue?')) return;
+      act(async function () {
+        var result = await post('/chat/api/routes/rotate', { name: route.name });
+        showAddress(route.name + ' — new address', result.address);
+      });
+    });
+    button('Remove', 'danger', function () {
+      if (!window.confirm('Permanently remove "' + route.name + '" from this chat?')) return;
+      act(function () { return post('/chat/api/routes/remove', { name: route.name, confirm: true }); }, route.name + ' removed.');
+    });
+    return tr;
+  }
+
+  async function loadRoutes() {
+    try {
+      var data = await api('/chat/api/routes');
+      $('waBadge').className = 'badge ' + (data.whatsappReady ? 'ok' : 'warn');
+      $('waBadge').innerHTML = '<span class="dot"></span> Bot ' + (data.whatsappReady ? 'online' : 'offline');
+      var wrap = $('routesWrap');
+      if (!data.routes.length) { wrap.innerHTML = '<p class="empty">No reports for this chat yet.</p>'; return; }
+      var table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Name</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>';
+      var tbody = document.createElement('tbody');
+      data.routes.forEach(function (route) { tbody.appendChild(routeRow(route)); });
+      table.appendChild(tbody);
+      wrap.innerHTML = '';
+      wrap.appendChild(table);
+    } catch (error) {
+      $('routesWrap').innerHTML = '<p class="empty">Could not load reports: ' + escapeHtml(error.message) + '</p>';
+    }
+  }
+
+  async function loadDeliveries() {
+    try {
+      var data = await api('/chat/api/deliveries?limit=30');
+      var wrap = $('deliveriesWrap');
+      if (!data.deliveries.length) { wrap.innerHTML = '<p class="empty">No deliveries yet.</p>'; return; }
+      var table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Email</th><th>Status</th><th>Pages</th><th>Updated</th><th></th></tr></thead>';
+      var tbody = document.createElement('tbody');
+      data.deliveries.forEach(function (d) {
+        var tr = document.createElement('tr');
+        var pages = d.totalPages != null ? (d.deliveredPages + ' / ' + d.totalPages) : String(d.deliveredPages);
+        tr.innerHTML = '<td>' + escapeHtml(d.subject || '—') + '</td>' +
+          '<td>' + badge(d.status) + (d.error ? '<div class="muted" style="font-size:0.78rem">' + escapeHtml(d.error) + '</div>' : '') + '</td>' +
+          '<td>' + escapeHtml(pages) + '</td><td class="muted">' + escapeHtml(fmtDate(d.updatedAt)) + '</td><td class="actions"></td>';
+        if (d.canRetry && d.messageId) {
+          var b = document.createElement('button');
+          b.className = 'small';
+          b.textContent = 'Retry';
+          b.addEventListener('click', async function () {
+            b.disabled = true;
+            try {
+              var result = await post('/chat/api/deliveries/retry', { messageId: d.messageId });
+              showBanner($('globalBanner'), result.message || 'Retry queued.', 'success');
+              loadDeliveries();
+            } catch (error) {
+              b.disabled = false;
+              showBanner($('globalBanner'), error.message, 'error');
+            }
+          });
+          tr.querySelector('.actions').appendChild(b);
+        }
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.innerHTML = '';
+      wrap.appendChild(table);
+    } catch (error) {
+      $('deliveriesWrap').innerHTML = '<p class="empty">Could not load deliveries: ' + escapeHtml(error.message) + '</p>';
+    }
+  }
+
+  $('createRouteBtn').addEventListener('click', async function () {
+    var name = $('newRouteName').value.trim();
+    $('newRouteResult').innerHTML = '';
+    if (!name) { showBanner($('newRouteResult'), 'Enter a report name.', 'error'); return; }
+    $('createRouteBtn').disabled = true;
+    try {
+      var result = await post('/chat/api/routes', { name: name });
+      showAddress(name + ' — address', result.address);
+      $('newRouteName').value = '';
+      loadRoutes();
+    } catch (error) {
+      showBanner($('newRouteResult'), error.message, 'error');
+    } finally {
+      $('createRouteBtn').disabled = false;
+    }
+  });
+
+  function refreshAll() { loadRoutes(); loadDeliveries(); }
+
+  if (chatId) enterDashboard();
+})();
+</script>
+</body>
+</html>

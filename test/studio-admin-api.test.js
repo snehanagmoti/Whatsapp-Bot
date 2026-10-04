@@ -194,10 +194,10 @@ test('admin rate limit applies per client even when the bearer token changes on 
     assert.deepEqual(statuses, [401, 401, 429, 429, 429]);
 });
 
-test('QR setup image endpoint is rate limited per client', async () => {
-    const base = await serve({ client: {}, qrSetupToken: 'setup-secret', adminRateLimit: 1, getLatestQr: () => null });
-    const first = await fetch(`${base}/setup/qr.svg`, { headers: { Authorization: 'Bearer wrong-1' } });
-    const second = await fetch(`${base}/setup/qr.svg`, { headers: { Authorization: 'Bearer wrong-2' } });
+test('admin endpoints are rate limited per client before the token check', async () => {
+    const base = await serve({ client: {}, studioAdminToken: 'admin-secret', adminRateLimit: 1, getLatestQr: () => null });
+    const first = await fetch(`${base}/admin/api/qr.svg`, { headers: { Authorization: 'Bearer wrong-1' } });
+    const second = await fetch(`${base}/admin/api/qr.svg`, { headers: { Authorization: 'Bearer wrong-2' } });
     assert.equal(first.status, 401);
     assert.equal(second.status, 429);
 });
