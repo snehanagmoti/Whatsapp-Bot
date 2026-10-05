@@ -4,7 +4,7 @@ const { handleStudioCommand } = require('../studioCommands');
 const { StudioRouteService } = require('../studioRouting');
 const { MemoryStudioStore } = require('../studioStore');
 
-test('authorized chat setup creates a routing address', async () => {
+test('chat setup creates a routing address', async () => {
     const store = new MemoryStudioStore();
     const routeService = new StudioRouteService({
         store,
@@ -17,7 +17,6 @@ test('authorized chat setup creates a routing address', async () => {
         message: { from: '123@g.us', senderId: 'admin@s.whatsapp.net', body: '!setupreport Daily Sales' },
         client,
         routeService,
-        canManage: async () => true
     });
     assert.equal(handled, true);
     assert.equal(replies.length, 1);
@@ -25,37 +24,35 @@ test('authorized chat setup creates a routing address', async () => {
     assert.equal((await routeService.listRoutes('123@g.us')).length, 1);
 });
 
-test('unauthorized users cannot create report routes', async () => {
+test('any member of a chat can create and manage that chat\'s reports', async () => {
+    const store = new MemoryStudioStore();
+    const routeService = new StudioRouteService({ store, routingEmail: 'reports@example.com', pepper: 'a-long-test-only-route-pepper-value' });
     const replies = [];
-    const handled = await handleStudioCommand({
-        message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!setupreport Sales' },
-        client: { sendMessage: async (...args) => replies.push(args) },
-        routeService: {},
-        canManage: async () => false,
-        canSetup: async () => false
-    });
-    assert.equal(handled, true);
-    assert.match(replies[0][1], /Report setup is not available to you/i);
+    const client = { sendMessage: async (...args) => replies.push(args) };
+    const send = body => handleStudioCommand({ message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body }, client, routeService });
+    await send('!setupreport Sales');
+    assert.match(replies.at(-1)[1], /Report route created for \*Sales\*/);
+    await send('!pausereport Sales');
+    assert.match(replies.at(-1)[1], /paused/);
+    await send('!listreportlinks');
+    assert.match(replies.at(-1)[1], /Sales — paused/);
+    await send('!removereport Sales --confirm');
+    assert.match(replies.at(-1)[1], /removed/);
+    assert.equal((await routeService.listRoutes('123@g.us')).length, 0);
 });
 
-test('public setup users cannot manage existing routes', async () => {
+test('a command only ever touches the chat it was sent in', async () => {
     const store = new MemoryStudioStore();
-    const routeService = new StudioRouteService({
-        store,
-        routingEmail: 'reports@example.com',
-        pepper: 'a-long-test-only-route-pepper-value'
-    });
-    await routeService.createRoute({ chatId: '123@g.us', name: 'Daily Sales', createdBy: 'admin' });
+    const routeService = new StudioRouteService({ store, routingEmail: 'reports@example.com', pepper: 'a-long-test-only-route-pepper-value' });
+    await routeService.createRoute({ chatId: 'other@g.us', name: 'Sales', createdBy: 'x' });
     const replies = [];
-    const handled = await handleStudioCommand({
-        message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!removereport Daily Sales' },
+    await handleStudioCommand({
+        message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!removereport Sales --confirm' },
         client: { sendMessage: async (...args) => replies.push(args) },
-        routeService,
-        canManage: async () => false,
-        canSetup: async () => true
+        routeService
     });
-    assert.equal(handled, true);
-    assert.match(replies[0][1], /authorized user or group administrator can manage existing/i);
+    assert.match(replies[0][1], /not found/);
+    assert.equal((await routeService.listRoutes('other@g.us')).length, 1);
 });
 
 test('requires an explicit confirmation before permanently removing a route', async () => {
@@ -70,7 +67,6 @@ test('requires an explicit confirmation before permanently removing a route', as
     const options = {
         client: { sendMessage: async (...args) => replies.push(args) },
         routeService,
-        canManage: async () => true
     };
 
     await handleStudioCommand({
@@ -101,7 +97,6 @@ test('requires an explicit confirmation before rotating a route', async () => {
     const options = {
         client: { sendMessage: async (...args) => replies.push(args) },
         routeService,
-        canManage: async () => true
     };
 
     await handleStudioCommand({
@@ -120,14 +115,12 @@ test('requires an explicit confirmation before rotating a route', async () => {
     assert.notEqual(rotatedRoute.tokenHash, originalTokenHash);
 });
 
-test('!help lists commands without requiring management permission or configured routing', async () => {
+test('!help lists commands without configured routing', async () => {
     const replies = [];
     const handledWithoutRouting = await handleStudioCommand({
         message: { from: '123@g.us', senderId: 'member@s.whatsapp.net', body: '!help' },
         client: { sendMessage: async (...args) => replies.push(args) },
-        routeService: null,
-        canManage: async () => false,
-        canSetup: async () => false
+        routeService: null
     });
     assert.equal(handledWithoutRouting, true);
     assert.match(replies[0][1], /!setupreport/);
@@ -148,7 +141,6 @@ test('explains the per-chat route quota when setup would exceed it', async () =>
         message: { from: '123@g.us', senderId: 'admin', body: '!setupreport Second' },
         client: { sendMessage: async (...args) => replies.push(args) },
         routeService,
-        canManage: async () => true
     });
     assert.match(replies[0][1], /maximum of 1 report routes/i);
     assert.match(replies[0][1], /remove an unused route/i);

@@ -143,3 +143,33 @@ test('an alert failure never breaks delivery handling', async () => {
     }
     assert.equal(context.store.deliveries.get(deliveryKey(context.payload.messageId, '222@g.us')).status, 'dead_letter');
 });
+
+function permanentError(message) {
+    const error = new Error(message);
+    error.permanent = true;
+    return error;
+}
+
+test('a PDF that can never convert gives up at once and tells each chat', async () => {
+    const context = await setup({ maxAttempts: 6 });
+    context.service.convertPdf = async () => { throw permanentError('PDF has 8 pages, which exceeds the configured limit of 5.'); };
+    await assert.rejects(() => context.service.process(context.payload), error => error.statusCode === 422);
+    for (const chatId of ['111@g.us', '222@g.us']) {
+        const record = context.store.deliveries.get(deliveryKey(context.payload.messageId, chatId));
+        assert.equal(record.status, 'dead_letter');
+        assert.equal(record.attempts, 1, 'no pointless retries');
+    }
+    assert.deepEqual(context.alerts.map(alert => alert.chatId).sort(), ['111@g.us', '222@g.us']);
+    assert.match(context.alerts[0].error, /exceeds the configured limit/);
+});
+
+test('the worker also gives up at once on a permanent PDF problem', async () => {
+    const context = await setup({ maxAttempts: 6 });
+    context.service.convertPdf = async () => { throw new Error('renderer busy'); };
+    await assert.rejects(() => context.service.process(context.payload), error => error.statusCode === 502);
+    context.worker.convertPdf = async () => { throw permanentError('PDF page 1 exceeds the configured geometry limit.'); };
+    context.clock.now = new Date(context.clock.now.getTime() + 60_000);
+    await context.worker.tick();
+    const statuses = ['111@g.us', '222@g.us'].map(chatId => context.store.deliveries.get(deliveryKey(context.payload.messageId, chatId)).status);
+    assert.deepEqual(statuses, ['dead_letter', 'dead_letter']);
+});

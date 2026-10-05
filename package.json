@@ -1,9 +1,9 @@
 {
   "name": "screenshot-bot",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --max-old-space-size=256 index.js",
     "test": "node --test",
     "test:mongo": "node --test test/mongo-integration.test.js",
     "check": "node --check index.js && node --check logRedaction.js && node --check server.js && node --check whatsappClient.js && node --check baileysAuthStore.js && node --check studioStore.js && node --check studioRouting.js && node --check studioEmailService.js && node --check studioDeliveryWorker.js && node --check studioCommands.js && node --check pdfProcessor.js && node --check ttlCache.js && node --check deliveryAlerts.js && node --check validation.js"

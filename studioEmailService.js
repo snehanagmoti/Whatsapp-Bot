@@ -115,7 +115,8 @@ class StudioEmailService {
     async failRoute({ messageId, route, subject, claimToken, error, countAttempt }) {
         const message = error.message || String(error);
         const outcome = await this.store.failDelivery(messageId, route.chatId, message, {
-            claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs, countAttempt
+            claimToken, maxAttempts: this.maxAttempts, retryBaseMs: this.retryBaseMs, countAttempt,
+            terminal: Boolean(error && error.permanent)
         });
         if (outcome === 'dead_letter') {
             await this.notifyDeadLetter({
@@ -241,7 +242,9 @@ class StudioEmailService {
             await Promise.all(claimedRoutes.map(({ route, claimToken }) =>
                 this.failRoute({ messageId, route, subject, claimToken, error, countAttempt: true })
             ));
-            throw new StudioEmailError(`Report delivery failed: ${error.message || error}`, 502);
+            // A PDF that breaks a limit will never convert: answer with a
+            // permanent 4xx so the Gmail bridge does not resend it either.
+            throw new StudioEmailError(`Report delivery failed: ${error.message || error}`, error && error.permanent ? 422 : 502);
         }
 
         const failures = [];

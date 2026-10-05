@@ -10,8 +10,8 @@ const { StudioEmailService } = require('./studioEmailService');
 const { StudioDeliveryWorker } = require('./studioDeliveryWorker');
 const { StudioRouteService } = require('./studioRouting');
 const { MongoStudioStore } = require('./studioStore');
-const { isValidWhatsAppChatId, parseCsvSet } = require('./validation');
-const { WhatsAppClient, normalizeJid } = require('./whatsappClient');
+const { parseCsvSet } = require('./validation');
+const { WhatsAppClient } = require('./whatsappClient');
 
 const DEFAULT_STUDIO_ALLOWED_SENDERS = 'data-studio-noreply@google.com';
 
@@ -36,23 +36,6 @@ function studioConfigurationPresent() {
     );
 }
 
-async function canManageRoutes({ chatId, senderId, message }) {
-    if (message.fromMe) return true;
-    // A sender can appear as a phone-number JID or as a LID; accept either.
-    const senderIds = [senderId, message.senderAltId].filter(Boolean);
-    const explicitAdmins = new Set([...parseCsvSet(process.env.STUDIO_ROUTE_ADMIN_IDS)].map(normalizeJid));
-    if (senderIds.some(id => explicitAdmins.has(normalizeJid(id)))) return true;
-    if (chatId.endsWith('@g.us')) return client.isGroupAdmin(chatId, senderIds).catch(() => false);
-    return process.env.NODE_ENV !== 'production' && process.env.STUDIO_ALLOW_TEST_SETUP === 'true';
-}
-
-async function canSetupRoutes(context) {
-    // Public setup is intentionally limited to creating a new route. Existing
-    // routes still require an administrator to pause, resume, rotate or remove.
-    if (String(process.env.STUDIO_ALLOW_PUBLIC_SETUP || '').toLowerCase() === 'true') return true;
-    return canManageRoutes(context);
-}
-
 async function main() {
     let routeService = null;
     let studioEmailService = null;
@@ -66,18 +49,11 @@ async function main() {
             routingEmail: process.env.STUDIO_ROUTING_EMAIL,
             pepper: process.env.STUDIO_ROUTE_PEPPER
         });
-        const alertChatId = String(process.env.STUDIO_ALERT_CHAT_ID || '').trim();
-        if (alertChatId && !isValidWhatsAppChatId(alertChatId)) {
-            console.warn('STUDIO_ALERT_CHAT_ID is not a valid WhatsApp chat ID; dead-letter alerts will only be logged.');
-        }
+        // When a delivery gives up, the affected chat is told why (#14).
         const onDeadLetter = createDeadLetterNotifier({
             client,
-            alertChatId: isValidWhatsAppChatId(alertChatId) ? alertChatId : null,
             isClientReady: () => whatsappReady
         });
-        console.log(isValidWhatsAppChatId(alertChatId)
-            ? 'Dead-letter alerts will be sent to the configured WhatsApp chat.'
-            : 'Dead-letter alerts are logged only (set STUDIO_ALERT_CHAT_ID to receive them on WhatsApp).');
         const configuredSenders = parseCsvSet(process.env.STUDIO_ALLOWED_SENDERS);
         const allowedSenders = configuredSenders.size
             ? configuredSenders
@@ -118,9 +94,6 @@ async function main() {
         routeService,
         studioStore
     });
-    if (process.env.NODE_ENV === 'production' && !process.env.QR_SETUP_TOKEN) {
-        console.warn('QR setup is disabled until QR_SETUP_TOKEN is configured.');
-    }
     if (process.env.NODE_ENV === 'production' && !process.env.STUDIO_ADMIN_TOKEN) {
         console.warn('Admin dashboard is disabled until STUDIO_ADMIN_TOKEN is configured.');
     }
@@ -151,7 +124,7 @@ async function main() {
         console.error('WhatsApp authentication failed:', message);
     });
     client.on('session_reset', () => {
-        console.warn('Logged-out WhatsApp session was cleared. A new QR code will be offered at /setup/qr and in the admin dashboard.');
+        console.warn('Logged-out WhatsApp session was cleared. A new QR code is shown in the admin dashboard.');
     });
     client.on('disconnected', reason => {
         whatsappReady = false;
@@ -162,9 +135,7 @@ async function main() {
             if (await handleStudioCommand({
                 message,
                 client,
-                routeService,
-                canManage: canManageRoutes,
-                canSetup: canSetupRoutes
+                routeService
             })) return;
             const chatId = message.fromMe ? message.to : message.from;
             if (String(message.body || '').trim() === '!chatid') {
@@ -174,6 +145,14 @@ async function main() {
             console.error('WhatsApp command failed:', error.message || error);
         }
     });
+
+    // Hourly memory line, to spot slow growth before it becomes a crash (#18).
+    const memoryTimer = setInterval(() => {
+        const usage = process.memoryUsage();
+        const mb = value => Math.round(value / 1024 / 1024);
+        console.log(`Memory: heap ${mb(usage.heapUsed)}/${mb(usage.heapTotal)} MB, rss ${mb(usage.rss)} MB, external ${mb(usage.external)} MB`);
+    }, 60 * 60 * 1000);
+    if (typeof memoryTimer.unref === 'function') memoryTimer.unref();
 
     console.log('Starting WhatsApp client...');
     await client.initialize();

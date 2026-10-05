@@ -15,18 +15,14 @@ const HELP_TEXT = [
     '!chatid — show this chat\'s WhatsApp ID (needed to manage routes from the dashboard)',
     '!help — show this message',
     '',
-    'The same routes can also be managed from the web dashboard at /admin/ on this bot\'s server.'
+    'Anyone in this chat can use these commands. The same reports can be managed on the web at /chat/ on this bot\'s server, using this chat\'s ID.'
 ].join('\n');
 
-async function handleStudioCommand({
-    message,
-    client,
-    routeService,
-    canManage = async () => false,
-    canSetup = canManage
-}) {
+// Anyone in a chat may manage that chat's reports; a command only ever
+// touches the chat it was sent in.
+async function handleStudioCommand({ message, client, routeService }) {
     const chatId = message.fromMe ? message.to : message.from;
-    const senderId = message.fromMe ? message.senderId || message.to : message.senderId || message.from;
+    const senderId = message.senderId || message.from;
     const text = String(message.body || '').trim();
     const known = [
         '!setupreport', '!listreportlinks', '!pausereport', '!resumereport',
@@ -46,10 +42,6 @@ async function handleStudioCommand({
     try {
         const setupName = commandArgument(text, '!setupreport');
         if (setupName !== null) {
-            if (!(await canSetup({ chatId, senderId, message }))) {
-                await client.sendMessage(chatId, 'Report setup is not available to you.');
-                return true;
-            }
             if (!setupName || setupName.length > 80) {
                 await client.sendMessage(chatId, 'Usage: !setupreport <report name> (maximum 80 characters)');
                 return true;
@@ -60,11 +52,6 @@ async function handleStudioCommand({
                 `In Looker Studio, open Share → Schedule delivery → Email and add:\n\n${created.address}\n\n` +
                 'Treat this address as a secret. Use !rotatereport if it is exposed.'
             );
-            return true;
-        }
-
-        if (!(await canManage({ chatId, senderId, message }))) {
-            await client.sendMessage(chatId, 'Only an authorized user or group administrator can manage existing report routes.');
             return true;
         }
 

@@ -6,7 +6,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: NODE_OPTIONS
-        value: --max-old-space-size=128
+        value: --max-old-space-size=256
       - key: MALLOC_ARENA_MAX
         value: "2"
       - key: MONGODB_URI
@@ -19,18 +19,10 @@ services:
         value: "604800000"
       - key: WA_COMMAND_MAX_AGE_MS
         value: "86400000"
-      - key: PUBLIC_BASE_URL
-        sync: false
-      - key: LOOKER_ACTION_TOKEN
-        generateValue: true
-      - key: QR_SETUP_TOKEN
-        generateValue: true
       - key: STUDIO_ADMIN_TOKEN
         generateValue: true
       - key: STUDIO_ADMIN_RATE_LIMIT_PER_MINUTE
         value: "60"
-      - key: LOOKER_ALLOWED_CHAT_IDS
-        sync: false
       - key: STUDIO_ROUTING_EMAIL
         sync: false
       - key: STUDIO_ROUTE_PEPPER
@@ -41,10 +33,6 @@ services:
         sync: false
       - key: STUDIO_ALLOWED_SENDERS
         value: data-studio-noreply@google.com
-      - key: STUDIO_ROUTE_ADMIN_IDS
-        sync: false
-      - key: STUDIO_ALLOW_PUBLIC_SETUP
-        value: "true"
       - key: STUDIO_MAX_ROUTES_PER_CHAT
         value: "20"
       - key: STUDIO_MAX_PDF_BYTES
@@ -75,7 +63,5 @@ services:
         value: "60000"
       - key: STUDIO_DELIVERY_WORKER_INTERVAL_MS
         value: "60000"
-      - key: STUDIO_ALERT_CHAT_ID
-        sync: false
       - key: STUDIO_DEAD_LETTER_RETENTION_MS
         value: "604800000"

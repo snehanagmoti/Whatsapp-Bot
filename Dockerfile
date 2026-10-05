@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 # Keep the Node/native allocators within Render Free's 512 MB memory budget.
 ENV NODE_ENV=production
-ENV NODE_OPTIONS=--max-old-space-size=128
+ENV NODE_OPTIONS=--max-old-space-size=256
 ENV MALLOC_ARENA_MAX=2
 
 # Poppler converts Looker Studio's scheduled PDF into WhatsApp-ready PNG pages.

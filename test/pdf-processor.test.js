@@ -97,3 +97,23 @@ test('Poppler renders every accepted PDF page into a genuine PNG', {
     assert.equal(pages.length, 2);
     assert.equal(pages.every(page => page.subarray(0, 8).equals(pngSignature)), true);
 });
+
+test('limit breaks are marked permanent, renderer crashes stay retryable', async () => {
+    const pdf = Buffer.from('%PDF-1.4\n% fake\n');
+    const info = pages => async (command, args) => ({
+        stdout: [`Pages: ${pages}`, ...Array.from({ length: pages }, (_, i) => `Page ${i + 1} size: 595 x 842 pts`)].join('\n')
+    });
+    await assert.rejects(
+        () => convertPdfToPngPages(pdf, { command: 'pdftoppm', infoCommand: 'pdfinfo', runCommand: info(8) }),
+        error => /exceeds the configured limit of 5/.test(error.message) && error.permanent === true
+    );
+    await assert.rejects(() => convertPdfToPngPages(Buffer.from('not a pdf')), error => error.permanent === true);
+    const crashing = async (command, args) => {
+        if (command === 'pdftoppm') throw new Error('renderer killed');
+        return info(1)(command, args);
+    };
+    await assert.rejects(
+        () => convertPdfToPngPages(pdf, { command: 'pdftoppm', infoCommand: 'pdfinfo', runCommand: crashing }),
+        error => /PDF rendering failed/.test(error.message) && !error.permanent
+    );
+});
