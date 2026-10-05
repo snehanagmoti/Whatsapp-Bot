@@ -114,3 +114,23 @@ test('a chat ID copied with a stray * or spaces from WhatsApp still opens that c
         assert.deepEqual(listed.routes.map(route => route.name), ['Sales']);
     }
 });
+
+test('chat-ID guessing is rate limited per visitor even when each request arrives through a different proxy', async () => {
+    // On Render every request reaches the app through a different Cloudflare
+    // server (a different X-Forwarded-For hop); CF-Connecting-IP stays the
+    // visitor's own address.
+    const { base } = await start({ adminRateLimit: 3 });
+    const statuses = [];
+    for (let i = 1; i <= 5; i += 1) {
+        const response = await fetch(`${base}/chat/api/routes`, {
+            headers: { 'X-Chat-Id': `${i}@g.us`, 'X-Forwarded-For': `10.0.0.${i}`, 'CF-Connecting-IP': '203.0.113.7' }
+        });
+        statuses.push(response.status);
+    }
+    assert.deepEqual(statuses, [200, 200, 200, 429, 429]);
+
+    const other = await fetch(`${base}/chat/api/routes`, {
+        headers: { 'X-Chat-Id': '1@g.us', 'X-Forwarded-For': '10.0.0.9', 'CF-Connecting-IP': '198.51.100.20' }
+    });
+    assert.equal(other.status, 200, 'another visitor has its own budget');
+});
