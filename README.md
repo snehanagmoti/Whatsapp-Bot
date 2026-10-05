@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.6.0** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.6.1** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,10 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.6.1 changes
+
+- **QR linking works on the first scan.** While waiting for a scan, each QR round normally ends after about 2 minutes 40 seconds (WhatsApp code 408). The bot treated this as a failure and waited longer each time (up to 60 seconds) before offering new codes, while the dashboard kept showing the expired one. After a successful scan WhatsApp asks for an immediate reconnect (code 515), and a late reconnect was rejected, so the scan was wasted. Now expired QR rounds restart after the base delay, a successful scan reconnects at once, and the dashboard drops a QR code as soon as its connection closes.
 
 ## Release 1.6.0 changes
 

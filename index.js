@@ -128,6 +128,10 @@ async function main() {
     });
     client.on('disconnected', reason => {
         whatsappReady = false;
+        // The QR belongs to the closed connection and can no longer be
+        // scanned; the dashboard shows the next one as soon as it arrives.
+        latestQr = null;
+        latestQrAt = 0;
         console.warn('WhatsApp disconnected:', reason);
     });
     client.on('message_create', async message => {
