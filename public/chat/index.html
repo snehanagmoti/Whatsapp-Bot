@@ -205,7 +205,7 @@
   async function api(path, options, idOverride) {
     options = options || {};
     var headers = Object.assign({ 'X-Chat-Id': idOverride || chatId }, options.body ? { 'Content-Type': 'application/json' } : {});
-    var response = await fetch(path, Object.assign({}, options, { headers: headers }));
+    var response = await fetch(path, Object.assign({ cache: 'no-store' }, options, { headers: headers }));
     var body = {};
     try { body = await response.json(); } catch (e) { /* empty */ }
     if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));

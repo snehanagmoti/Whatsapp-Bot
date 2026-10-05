@@ -88,3 +88,19 @@ test('the chat dashboard page is served', async () => {
     assert.equal(page.status, 200);
     assert.match(await page.text(), /My chat's reports/);
 });
+
+test('status and API answers are never cached by the browser, pages still are', async () => {
+    const { base, call } = await start();
+    const admin = { headers: { Authorization: 'Bearer admin-secret' } };
+    for (const [label, response] of [
+        ['admin status', await fetch(`${base}/admin/api/status`, admin)],
+        ['chat routes', await call('111@g.us', '/chat/api/routes')],
+        ['healthz', await fetch(`${base}/healthz`)],
+        ['readyz', await fetch(`${base}/readyz`)]
+    ]) {
+        assert.equal(response.headers.get('cache-control'), 'no-store', `${label} must not be cached`);
+    }
+    const page = await fetch(`${base}/admin/`);
+    assert.equal(page.status, 200);
+    assert.notEqual(page.headers.get('cache-control'), 'no-store', 'static pages keep normal caching');
+});

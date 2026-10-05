@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.6.1** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.6.2** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,10 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.6.2 changes
+
+- **Dashboards always show fresh status.** Status, QR and API answers (`/admin/api/*`, `/chat/api/*`, `/studio/*`, `/healthz`, `/readyz`, `/versionz`) are sent with `Cache-Control: no-store`, and both dashboards ask for fresh answers. A browser had reused a broken saved copy of `/admin/api/status`, leaving the admin dashboard on "Could not load status" with no QR code. An empty answer now shows a clear message instead of a script error.
 
 ## Release 1.6.1 changes
 
