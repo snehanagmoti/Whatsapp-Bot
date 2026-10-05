@@ -26,6 +26,17 @@ function positiveInteger(value, fallback) {
 // `keyBy: 'ip'`; otherwise every invented token would get a fresh bucket,
 // bypassing the limit and growing memory without bound. Expired buckets are
 // swept once per window and the table size is capped.
+// Render sits behind Cloudflare, so req.ip is the address of whichever
+// Cloudflare server forwarded the request, and it changes from request to
+// request: every request landed in a fresh bucket and limits never applied.
+// Cloudflare puts the visitor's own address in CF-Connecting-IP (and
+// True-Client-IP); use it when present, otherwise fall back to req.ip.
+function clientAddress(req) {
+    const forwarded = String(req.get('cf-connecting-ip') || req.get('true-client-ip') || '').trim();
+    if (forwarded && forwarded.length <= 64 && /^[0-9a-fA-F:.]+$/.test(forwarded)) return forwarded;
+    return req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
 function createRateLimiter({
     maxRequests = 30,
     windowMs = 60_000,
@@ -45,7 +56,7 @@ function createRateLimiter({
     const limiter = (req, res, next) => {
         const currentMs = now();
         if (currentMs >= nextSweepAt) sweep(currentMs);
-        const address = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+        const address = clientAddress(req);
         const identity = keyBy === 'ip' ? `ip:${address}` : (req.get('authorization') || `ip:${address}`);
         const key = crypto.createHash('sha256').update(identity).digest('hex');
         let bucket = buckets.get(key);

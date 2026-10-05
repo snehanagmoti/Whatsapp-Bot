@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.6.3** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.6.4** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,10 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.6.4 changes
+
+- **Rate limits work behind Render's proxy.** Render sits behind Cloudflare, so the address the app saw was whichever Cloudflare server forwarded the request, and it changed from request to request. Each request got a fresh bucket and the per-minute limits on the admin and chat dashboards never applied (70 wrong chat IDs in a few seconds were all answered). Limits now use the visitor's own address from `CF-Connecting-IP` (or `True-Client-IP`), falling back to the previous behaviour when it is absent.
 
 ## Release 1.6.3 changes
 
