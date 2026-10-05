@@ -231,7 +231,7 @@
   }
 
   $('loginBtn').addEventListener('click', async function () {
-    var value = $('chatInput').value.trim();
+    var value = $('chatInput').value.replace(/[\s*_~`]/g, '');
     if (!value) { showBanner($('loginError'), 'Enter the chat ID.', 'error'); return; }
     $('loginBtn').disabled = true;
     try {

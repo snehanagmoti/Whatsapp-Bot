@@ -104,3 +104,13 @@ test('status and API answers are never cached by the browser, pages still are', 
     assert.equal(page.status, 200);
     assert.notEqual(page.headers.get('cache-control'), 'no-store', 'static pages keep normal caching');
 });
+
+test('a chat ID copied with a stray * or spaces from WhatsApp still opens that chat', async () => {
+    const { call, routeService } = await start();
+    await routeService.createRoute({ chatId: '111@g.us', name: 'Sales', createdBy: 'x' });
+    for (const copied of ['*111@g.us', ' 111@g.us* ', '*111@g.us*']) {
+        const listed = await (await call(copied, '/chat/api/routes')).json();
+        assert.equal(listed.chatId, '111@g.us', `"${copied}" is read as 111@g.us`);
+        assert.deepEqual(listed.routes.map(route => route.name), ['Sales']);
+    }
+});

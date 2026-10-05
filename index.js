@@ -143,7 +143,9 @@ async function main() {
             })) return;
             const chatId = message.fromMe ? message.to : message.from;
             if (String(message.body || '').trim() === '!chatid') {
-                await client.sendMessage(chatId, `Your WhatsApp Chat ID is:\n\n*${chatId}*`);
+                // Sent without *bold*: WhatsApp links an ID like 123@g.us and then
+                // shows a stray '*' that people copy along with the ID.
+                await client.sendMessage(chatId, `Your WhatsApp Chat ID is:\n\n${chatId}`);
             }
         } catch (error) {
             console.error('WhatsApp command failed:', error.message || error);
