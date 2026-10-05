@@ -193,6 +193,40 @@ test('retires stale socket listeners and reconnects with capped exponential back
 });
 
 
+test('QR linking: expired QR rounds do not grow the backoff and a successful scan reconnects at once', async () => {
+    const closeWith = statusCode => ({ connection: 'close', lastDisconnect: { error: { output: { statusCode } } } });
+    const { authStore, client, sockets, timers } = createHarness({
+        authOverrides: { state: { creds: { registered: false } } },
+        baileysExtras: { DisconnectReason: { loggedOut: 401, timedOut: 408, restartRequired: 515 } }
+    });
+    await client.initialize();
+
+    // Waiting for a scan: every QR round ends with 408. Each new round must
+    // come quickly, never after a growing wait (that left a dead QR on screen).
+    for (let round = 0; round < 4; round += 1) {
+        sockets.at(-1).ev.emit('connection.update', closeWith(408));
+        assert.equal(timers.at(-1).delay, 3000, `QR round ${round + 1} reconnects after the base delay`);
+        await timers.at(-1).callback();
+    }
+
+    // The scan succeeded: WhatsApp closes with 515 and expects the new login
+    // straight away, even after earlier failures pushed the backoff up.
+    sockets.at(-1).ev.emit('connection.update', { connection: 'close' });
+    await timers.at(-1).callback();
+    authStore.state.creds.me = { id: '919800000000:1@s.whatsapp.net' };
+    sockets.at(-1).ev.emit('connection.update', closeWith(515));
+    assert.equal(timers.at(-1).delay, 0, 'restart-required reconnects immediately');
+    await timers.at(-1).callback();
+
+    // Once linked, a 408 is a real timeout again and backs off as usual.
+    sockets.at(-1).ev.emit('connection.update', closeWith(408));
+    assert.equal(timers.at(-1).delay, 3000);
+    await timers.at(-1).callback();
+    sockets.at(-1).ev.emit('connection.update', closeWith(408));
+    assert.equal(timers.at(-1).delay, 6000);
+    await client.destroy();
+});
+
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const loggedOutUpdate = { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } };
 

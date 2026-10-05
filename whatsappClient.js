@@ -168,9 +168,9 @@ class WhatsAppClient extends EventEmitter {
         this.reconnectTimer = null;
     }
 
-    scheduleReconnect() {
+    scheduleReconnect({ immediate = false } = {}) {
         if (this.destroyed || this.reconnectTimer !== null) return;
-        const delay = this.nextBackoffDelay();
+        const delay = immediate ? 0 : this.nextBackoffDelay();
         this.reconnectTimer = this.setTimeoutFn(async () => {
             this.reconnectTimer = null;
             if (this.destroyed) return;
@@ -326,6 +326,20 @@ class WhatsAppClient extends EventEmitter {
                 this.recoverFromLogout();
                 return;
             }
+            // Two closes are part of normal QR linking, not failures, so they
+            // must not grow the reconnect backoff:
+            // - 515 arrives right after a successful scan; WhatsApp expects the
+            //   new login at once and rejects a late one (the scan is wasted).
+            // - 408 before the device is linked means the QR codes of this
+            //   round expired; show a fresh round quickly.
+            const linked = Boolean(this.authStore.state.creds && this.authStore.state.creds.me);
+            const hasCode = typeof statusCode === 'number';
+            if (hasCode && statusCode === DisconnectReason.restartRequired) {
+                this.reconnectAttempt = 0;
+                this.scheduleReconnect({ immediate: true });
+                return;
+            }
+            if (hasCode && statusCode === DisconnectReason.timedOut && !linked) this.reconnectAttempt = 0;
             this.scheduleReconnect();
         };
 
