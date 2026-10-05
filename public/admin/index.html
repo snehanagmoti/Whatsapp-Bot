@@ -259,7 +259,7 @@
   }
 
   async function api(path, options) {
-    var response = await fetch(path, Object.assign({}, options, {
+    var response = await fetch(path, Object.assign({ cache: 'no-store' }, options, {
       headers: Object.assign({ Authorization: 'Bearer ' + token }, (options && options.headers) || {})
     }));
     if (response.status === 401) {
@@ -271,6 +271,7 @@
     if (!response.ok) {
       throw new Error((body && body.error) || ('Request failed with status ' + response.status));
     }
+    if (body === null) throw new Error('The service sent an empty answer. It refreshes again in a few seconds.');
     return body;
   }
 
@@ -301,7 +302,7 @@
     el.loginBtn.disabled = true;
     showBanner(el.loginError, 'Checking token…', 'info');
     try {
-      var response = await fetch('/admin/api/status', { headers: { Authorization: 'Bearer ' + value } });
+      var response = await fetch('/admin/api/status', { cache: 'no-store', headers: { Authorization: 'Bearer ' + value } });
       if (response.status === 401) {
         showBanner(el.loginError, 'That token was rejected. Copy the value of STUDIO_ADMIN_TOKEN from Render → Environment and paste it again.', 'error');
         return;
@@ -354,7 +355,7 @@
 
   async function refreshQr() {
     try {
-      var response = await fetch('/admin/api/qr.svg', { headers: { Authorization: 'Bearer ' + token } });
+      var response = await fetch('/admin/api/qr.svg', { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
       if (response.status === 425) { el.qrStatusLine.textContent = 'Waiting for a fresh QR code…'; return; }
       if (response.status === 409) { stopQrTimer(); refreshStatus(); return; }
       if (response.status === 401) { logout('Session token was rejected. Enter it again.'); return; }

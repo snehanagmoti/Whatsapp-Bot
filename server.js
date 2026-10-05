@@ -271,6 +271,15 @@ function createApp({
     const app = express();
     app.disable('x-powered-by');
     app.set('trust proxy', 1);
+    // Status, QR and API answers change from second to second and some carry
+    // per-chat data: browsers must never reuse a saved copy. (A cached
+    // /admin/api/status left the dashboard stuck on "Could not load status".)
+    app.use((req, res, next) => {
+        if (/^\/(admin\/api|chat\/api|studio)\//.test(req.path) || /^\/(healthz|readyz|versionz)$/.test(req.path)) {
+            res.set('Cache-Control', 'no-store');
+        }
+        next();
+    });
     app.use(express.static(path.join(__dirname, 'public')));
     const studioBody = express.json({ limit: studioRequestBytes });
     const limitStudio = createRateLimiter({ maxRequests: studioRateLimit });

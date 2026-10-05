@@ -1,4 +1,4 @@
-# Using the Report Bot - v1.6.1
+# Using the Report Bot - v1.6.2
 
 ## One-time operator setup
 
