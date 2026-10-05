@@ -106,4 +106,4 @@ Verify the live version/commit, deployed secrets/configuration and preserved App
 
 When diagnosing missing delivery, correlate the Gmail message ID across Apps Script and service logs. Do not delete all routes, aliases or the entire processed ledger as a general recovery step. Correct the specific error, preserve valid aliases for other chats and use a new controlled delivery where appropriate.
 
-The regenerated PDF is a readable companion to this file. The source code, configuration files and recorded release checks remain the implementation evidence. See [USAGE_GUIDE.md](./USAGE_GUIDE.md) and [LOOKER_INTEGRATION_HANDOVER.md](./LOOKER_INTEGRATION_HANDOVER.md) for operator steps.
+The source code, configuration files and recorded release checks are the implementation evidence. See [USAGE_GUIDE.md](./USAGE_GUIDE.md) and [LOOKER_INTEGRATION_HANDOVER.md](./LOOKER_INTEGRATION_HANDOVER.md) for operator steps.
