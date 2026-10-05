@@ -1,6 +1,6 @@
 # Looker Studio to WhatsApp Report Bot
 
-Release **1.6.2** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
+Release **1.6.3** delivers scheduled Looker Studio PDFs as images to WhatsApp groups or individual chats. Looker Studio generates the PDF; a Gmail/Workspace routing mailbox and Google Apps Script forward it to this Node.js service. The service validates the request, resolves secret routing aliases, converts PDF pages with Poppler, and sends the images through one linked WhatsApp account.
 
 It does not log into Looker Studio, import cookies, visit private report URLs, or capture browser screenshots.
 
@@ -19,6 +19,10 @@ It does not log into Looker Studio, import cookies, visit private report URLs, o
 ```
 
 One bot number can serve many chats. Use one alias for each destination chat in a particular schedule. An ingested email containing several active aliases fans out to every distinct mapped chat. Deduplication uses the Gmail message ID and destination chat: it does not treat separately generated emails with different IDs as the same delivery.
+
+## Release 1.6.3 changes
+
+- **`!chatid` gives a clean ID.** The reply used to wrap the ID in `*bold*`. In groups WhatsApp turns `…@g.us` into a link and showed a stray `*` that people copied with the ID. The ID is now sent plain, and the chat dashboard ignores spaces and WhatsApp formatting marks (`* _ ~` and backticks) copied along with it.
 
 ## Release 1.6.2 changes
 

@@ -319,7 +319,9 @@ function createApp({
     // The chat dashboard logs in with a chat ID only (by design: simple to
     // use). The ID is sent as X-Chat-Id and every chat endpoint is limited to
     // that one chat.
-    const chatHeader = req => String(req.get('x-chat-id') || '').trim();
+    // Chat IDs never contain spaces or WhatsApp formatting marks; drop any
+    // that were copied along with the ID (for example a stray '*').
+    const chatHeader = req => String(req.get('x-chat-id') || '').replace(/[\s*_~`]/g, '');
 
     app.get('/healthz', (req, res) => res.json({
         status: 'ok',
