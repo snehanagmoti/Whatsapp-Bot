@@ -71,6 +71,7 @@
   button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   button.small { padding: 4px 9px; font-size: 0.82rem; }
+  button.close-banner { float: right; border: none; background: none; color: inherit; padding: 0 2px; font-size: 1rem; line-height: 1; margin-left: 10px; }
   input, select {
     font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); width: 100%;
@@ -218,6 +219,8 @@
     localStorage.removeItem(STORAGE_KEY);
     chatId = '';
     if (pollTimer) clearInterval(pollTimer);
+    // A secret address from this chat must not stay on screen for the next chat.
+    $('newRouteResult').innerHTML = '';
     $('dashboard').hidden = true;
     $('loginScreen').hidden = false;
   }
@@ -248,10 +251,13 @@
   });
   $('chatInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('loginBtn').click(); });
   $('logoutBtn').addEventListener('click', logout);
+  $('newRouteResult').addEventListener('click', event => {
+    if (event.target.closest('.close-banner')) $('newRouteResult').innerHTML = '';
+  });
   $('refreshBtn').addEventListener('click', refreshAll);
 
   function showAddress(title, address) {
-    $('newRouteResult').innerHTML = '<div class="banner success">' + escapeHtml(title) + ' (shown once — keep it private):' +
+    $('newRouteResult').innerHTML = '<div class="banner success">' + '<button type="button" class="close-banner" aria-label="Hide address" title="Hide">✕</button>' + escapeHtml(title) + ' (shown once — keep it private):' +
       '<div class="secret-box">' + escapeHtml(address) + '</div>' +
       'Add this address as a recipient in the Looker Studio report\'s Schedule delivery.</div>';
   }

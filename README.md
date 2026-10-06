@@ -22,7 +22,8 @@ One bot number can serve many chats. Use one alias for each destination chat in 
 
 ## Release 1.6.5 changes
 
-- **Clean-up only, no behaviour change.** Removed files the bot never uses: the old WhatsApp Web cache (`.wwebjs_cache/`, 1.1 MB), the `scratch/` simulator, the generated risks PDF and its generator script, and `LOOKER_INTEGRATION_OPTIONS.md` (its content is in the handover). The test PDF builder moved to `test/helpers/pdf.js`; `npm test` runs `test/*.test.js`. The Docker image no longer copies tests, docs, scripts or the Apps Script source. CI uses `actions/checkout@v5` and `actions/setup-node@v5` (Node 20 warning gone).
+- **Dashboards: the new-address box can be closed.** After creating or rotating a report, the box with its secret address now has a ✕, and it is cleared on Change chat / Log out, so one chat's address never stays on screen for the next chat.
+- **Clean-up, no behaviour change.** Removed files the bot never uses: the old WhatsApp Web cache (`.wwebjs_cache/`, 1.1 MB), the `scratch/` simulator, the generated risks PDF and its generator script, and `LOOKER_INTEGRATION_OPTIONS.md` (its content is in the handover). The test PDF builder moved to `test/helpers/pdf.js`; `npm test` runs `test/*.test.js`. The Docker image no longer copies tests, docs, scripts or the Apps Script source. CI uses `actions/checkout@v5` and `actions/setup-node@v5` (Node 20 warning gone).
 
 ## Release 1.6.4 changes
 
