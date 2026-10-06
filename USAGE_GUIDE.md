@@ -1,4 +1,4 @@
-# Using the Report Bot - v1.6.4
+# Using the Report Bot - v1.6.5
 
 ## One-time operator setup
 
@@ -133,9 +133,5 @@ The bridge searches read and unread mail. It scans recent threads in pages of fi
 Chat IDs may end in `@g.us` (groups, including older `123-456@g.us` IDs), `@s.whatsapp.net` or `@c.us` (phone numbers) or `@lid` (WhatsApp's privacy identifiers). Both dashboards and their APIs accept all of them.
 
 An active processing lease receives a retryable response. If the service dies, a subsequent bridge attempt can reclaim it after the lease expires (ten minutes in the supplied deployment configuration). Saved successful pages and completed chats are skipped on retry. An ambiguous WhatsApp acknowledgement can still cause one repeated page.
-
-## Optional simulator
-
-`scratch/test_studio_email_delivery.js` sends a synthetic PDF to the configured real destination, so only run it for a controlled test. Configure `PUBLIC_BASE_URL` (the simulator's own setting for the service's base URL; the service no longer uses it), `STUDIO_INGEST_TOKEN`, `STUDIO_TEST_ROUTING_EMAIL` and `STUDIO_TEST_SENDER`. The sender must match the service's approved sender list. It tests the HTTP/PDF/WhatsApp path, not Gmail or Looker scheduling.
 
 See [RISKS_AND_LIMITATIONS.md](./RISKS_AND_LIMITATIONS.md) for operational limits and [LOOKER_INTEGRATION_HANDOVER.md](./LOOKER_INTEGRATION_HANDOVER.md) for release ownership.
